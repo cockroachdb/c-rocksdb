@@ -52,6 +52,8 @@ class Compaction {
     return inputs_[compaction_input_level].level;
   }
 
+  int start_level() const { return start_level_; }
+
   // Outputs will go to this level
   int output_level() const { return output_level_; }
 
@@ -92,7 +94,7 @@ class Compaction {
   // input level.
   // REQUIREMENT: "compaction_input_level" must be >= 0 and
   //              < "input_levels()"
-  std::vector<FileMetaData*>* const inputs(size_t compaction_input_level) {
+  const std::vector<FileMetaData*>* inputs(size_t compaction_input_level) {
     assert(compaction_input_level < inputs_.size());
     return &inputs_[compaction_input_level].files;
   }
@@ -119,7 +121,7 @@ class Compaction {
   // moving a single input file to the next level (no merging or splitting)
   bool IsTrivialMove() const;
 
-  // If true, then the comaction can be done by simply deleting input files.
+  // If true, then the compaction can be done by simply deleting input files.
   bool IsDeletionCompaction() const {
     return deletion_compaction_;
   }
@@ -134,10 +136,6 @@ class Compaction {
   // Returns true iff we should stop building the current output
   // before processing "internal_key".
   bool ShouldStopBefore(const Slice& internal_key);
-
-  // Release the input version for the compaction, once the compaction
-  // is successful.
-  void ReleaseInputs();
 
   // Clear all files to indicate that they are not being compacted
   // Delete this compaction from the list of running compactions.
@@ -192,6 +190,12 @@ class Compaction {
   CompactionInputFiles* TEST_GetInputFiles(int l) {
     return &inputs_[l];
   }
+
+  struct InputLevelSummaryBuffer {
+    char buffer[128];
+  };
+
+  const char* InputLevelSummary(InputLevelSummaryBuffer* scratch) const;
 
  private:
   friend class CompactionPicker;

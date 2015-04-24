@@ -22,8 +22,7 @@
 
 namespace rocksdb {
 
-class TablePropertiesTest {
-};
+class TablePropertiesTest : public testing::Test {};
 
 // TODO(kailiu) the following classes should be moved to some more general
 // places, so that other tests can also make use of them.
@@ -35,11 +34,11 @@ class FakeWritableFile : public WritableFile {
 
   const std::string& contents() const { return contents_; }
 
-  virtual Status Close() { return Status::OK(); }
-  virtual Status Flush() { return Status::OK(); }
-  virtual Status Sync() { return Status::OK(); }
+  virtual Status Close() override { return Status::OK(); }
+  virtual Status Flush() override { return Status::OK(); }
+  virtual Status Sync() override { return Status::OK(); }
 
-  virtual Status Append(const Slice& data) {
+  virtual Status Append(const Slice& data) override {
     contents_.append(data.data(), data.size());
     return Status::OK();
   }
@@ -60,7 +59,7 @@ class FakeRandomeAccessFile : public RandomAccessFile {
   uint64_t Size() const { return contents_.size(); }
 
   virtual Status Read(uint64_t offset, size_t n, Slice* result,
-                       char* scratch) const {
+                      char* scratch) const override {
     if (offset > contents_.size()) {
       return Status::InvalidArgument("invalid Read offset");
     }
@@ -79,8 +78,9 @@ class FakeRandomeAccessFile : public RandomAccessFile {
 
 class DumbLogger : public Logger {
  public:
-  virtual void Logv(const char* format, va_list ap) { }
-  virtual size_t GetLogFileSize() const { return 0; }
+  using Logger::Logv;
+  virtual void Logv(const char* format, va_list ap) override {}
+  virtual size_t GetLogFileSize() const override { return 0; }
 };
 
 // Utilities test functions
@@ -100,9 +100,9 @@ void MakeBuilder(const Options& options,
 // Collects keys that starts with "A" in a table.
 class RegularKeysStartWithA: public TablePropertiesCollector {
  public:
-   const char* Name() const { return "RegularKeysStartWithA"; }
+  const char* Name() const override { return "RegularKeysStartWithA"; }
 
-   Status Finish(UserCollectedProperties* properties) {
+  Status Finish(UserCollectedProperties* properties) override {
      std::string encoded;
      PutVarint32(&encoded, count_);
      *properties = UserCollectedProperties {
@@ -112,7 +112,7 @@ class RegularKeysStartWithA: public TablePropertiesCollector {
      return Status::OK();
    }
 
-   Status Add(const Slice& user_key, const Slice& value) {
+   Status Add(const Slice& user_key, const Slice& value) override {
      // simply asssume all user keys are not empty.
      if (user_key.data()[0] == 'A') {
        ++count_;
@@ -120,7 +120,7 @@ class RegularKeysStartWithA: public TablePropertiesCollector {
      return Status::OK();
    }
 
-  virtual UserCollectedProperties GetReadableProperties() const {
+   virtual UserCollectedProperties GetReadableProperties() const override {
     return UserCollectedProperties{};
   }
 
@@ -130,10 +130,10 @@ class RegularKeysStartWithA: public TablePropertiesCollector {
 
 class RegularKeysStartWithAFactory : public TablePropertiesCollectorFactory {
  public:
-  virtual TablePropertiesCollector* CreateTablePropertiesCollector() {
+  virtual TablePropertiesCollector* CreateTablePropertiesCollector() override {
     return new RegularKeysStartWithA();
   }
-  const char* Name() const { return "RegularKeysStartWithA"; }
+  const char* Name() const override { return "RegularKeysStartWithA"; }
 };
 
 extern uint64_t kBlockBasedTableMagicNumber;
@@ -194,7 +194,7 @@ void TestCustomizedTablePropertiesCollector(
 }
 }  // namespace
 
-TEST(TablePropertiesTest, CustomizedTablePropertiesCollector) {
+TEST_F(TablePropertiesTest, CustomizedTablePropertiesCollector) {
   // Test properties collectors with internal keys or regular keys
   // for block based table
   for (bool encode_as_internal : { true, false }) {
@@ -300,7 +300,7 @@ void TestInternalKeyPropertiesCollector(
 }
 }  // namespace
 
-TEST(TablePropertiesTest, InternalKeyPropertiesCollector) {
+TEST_F(TablePropertiesTest, InternalKeyPropertiesCollector) {
   TestInternalKeyPropertiesCollector(
       kBlockBasedTableMagicNumber,
       true /* sanitize */,
@@ -325,5 +325,6 @@ TEST(TablePropertiesTest, InternalKeyPropertiesCollector) {
 }  // namespace rocksdb
 
 int main(int argc, char** argv) {
-  return rocksdb::test::RunAllTests();
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
 }

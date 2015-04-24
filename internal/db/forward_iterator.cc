@@ -53,7 +53,7 @@ class LevelIterator : public Iterator {
     status_ = Status::NotSupported("LevelIterator::SeekToLast()");
     valid_ = false;
   }
-  void Prev() {
+  void Prev() override {
     status_ = Status::NotSupported("LevelIterator::Prev()");
     valid_ = false;
   }
@@ -158,7 +158,9 @@ void ForwardIterator::Cleanup(bool release_sv) {
 
   if (release_sv) {
     if (sv_ != nullptr && sv_->Unref()) {
-      JobContext job_context;
+      // Job id == 0 means that this is not our background process, but rather
+      // user thread
+      JobContext job_context(0);
       db_->mutex_.Lock();
       sv_->Cleanup();
       db_->FindObsoleteFiles(&job_context, false, true);

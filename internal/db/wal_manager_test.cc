@@ -14,6 +14,7 @@
 #include "db/column_family.h"
 #include "db/version_set.h"
 #include "db/writebuffer.h"
+#include "util/string_util.h"
 #include "util/testharness.h"
 #include "util/testutil.h"
 #include "table/mock_table.h"
@@ -23,12 +24,12 @@ namespace rocksdb {
 
 // TODO(icanadi) mock out VersionSet
 // TODO(icanadi) move other WalManager-specific tests from db_test here
-class WalManagerTest {
+class WalManagerTest : public testing::Test {
  public:
   WalManagerTest()
       : env_(Env::Default()),
         dbname_(test::TmpDir() + "/wal_manager_test"),
-        table_cache_(NewLRUCache(50000, 16, 8)),
+        table_cache_(NewLRUCache(50000, 16)),
         write_buffer_(db_options_.db_write_buffer_size),
         current_log_number_(0) {
     DestroyDB(dbname_, Options());
@@ -86,7 +87,7 @@ class WalManagerTest {
     unique_ptr<TransactionLogIterator> iter;
     Status status = wal_manager_->GetUpdatesSince(
         seq, &iter, TransactionLogIterator::ReadOptions(), versions_.get());
-    ASSERT_OK(status);
+    EXPECT_OK(status);
     return std::move(iter);
   }
 
@@ -104,7 +105,7 @@ class WalManagerTest {
   uint64_t current_log_number_;
 };
 
-TEST(WalManagerTest, ReadFirstRecordCache) {
+TEST_F(WalManagerTest, ReadFirstRecordCache) {
   Init();
   std::string path = dbname_ + "/000001.log";
   unique_ptr<WritableFile> file;
@@ -182,17 +183,17 @@ int CountRecords(TransactionLogIterator* iter) {
   BatchResult res;
   while (iter->Valid()) {
     res = iter->GetBatch();
-    ASSERT_TRUE(res.sequence > lastSequence);
+    EXPECT_TRUE(res.sequence > lastSequence);
     ++count;
     lastSequence = res.sequence;
-    ASSERT_OK(iter->status());
+    EXPECT_OK(iter->status());
     iter->Next();
   }
   return count;
 }
 }  // namespace
 
-TEST(WalManagerTest, WALArchivalSizeLimit) {
+TEST_F(WalManagerTest, WALArchivalSizeLimit) {
   db_options_.WAL_ttl_seconds = 0;
   db_options_.WAL_size_limit_MB = 1000;
   Init();
@@ -230,7 +231,7 @@ TEST(WalManagerTest, WALArchivalSizeLimit) {
   ASSERT_TRUE(log_files.empty());
 }
 
-TEST(WalManagerTest, WALArchivalTtl) {
+TEST_F(WalManagerTest, WALArchivalTtl) {
   db_options_.WAL_ttl_seconds = 1000;
   Init();
 
@@ -256,7 +257,7 @@ TEST(WalManagerTest, WALArchivalTtl) {
   ASSERT_TRUE(log_files.empty());
 }
 
-TEST(WalManagerTest, TransactionLogIteratorMoveOverZeroFiles) {
+TEST_F(WalManagerTest, TransactionLogIteratorMoveOverZeroFiles) {
   Init();
   RollTheLog(false);
   Put("key1", std::string(1024, 'a'));
@@ -270,7 +271,7 @@ TEST(WalManagerTest, TransactionLogIteratorMoveOverZeroFiles) {
   ASSERT_EQ(2, CountRecords(iter.get()));
 }
 
-TEST(WalManagerTest, TransactionLogIteratorJustEmptyFile) {
+TEST_F(WalManagerTest, TransactionLogIteratorJustEmptyFile) {
   Init();
   RollTheLog(false);
   auto iter = OpenTransactionLogIter(0);
@@ -280,4 +281,7 @@ TEST(WalManagerTest, TransactionLogIteratorJustEmptyFile) {
 
 }  // namespace rocksdb
 
-int main(int argc, char** argv) { return rocksdb::test::RunAllTests(); }
+int main(int argc, char** argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
+}

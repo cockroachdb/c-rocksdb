@@ -28,13 +28,14 @@
 #include "util/coding.h"
 #include "util/log_buffer.h"
 #include "util/mutexlock.h"
+#include "util/string_util.h"
 #include "util/testharness.h"
 
 namespace rocksdb {
 
 static const int kDelayMicros = 100000;
 
-class EnvPosixTest {
+class EnvPosixTest : public testing::Test {
  private:
   port::Mutex mu_;
   std::string events_;
@@ -49,14 +50,89 @@ static void SetBool(void* ptr) {
       ->store(true, std::memory_order_relaxed);
 }
 
-TEST(EnvPosixTest, RunImmediately) {
+class SleepingBackgroundTask {
+ public:
+  explicit SleepingBackgroundTask()
+      : bg_cv_(&mutex_), should_sleep_(true), sleeping_(false) {}
+  void DoSleep() {
+    MutexLock l(&mutex_);
+    sleeping_ = true;
+    while (should_sleep_) {
+      bg_cv_.Wait();
+    }
+    sleeping_ = false;
+    bg_cv_.SignalAll();
+  }
+
+  void WakeUp() {
+    MutexLock l(&mutex_);
+    should_sleep_ = false;
+    bg_cv_.SignalAll();
+
+    while (sleeping_) {
+      bg_cv_.Wait();
+    }
+  }
+
+  bool IsSleeping() {
+    MutexLock l(&mutex_);
+    return sleeping_;
+  }
+
+  static void DoSleepTask(void* arg) {
+    reinterpret_cast<SleepingBackgroundTask*>(arg)->DoSleep();
+  }
+
+ private:
+  port::Mutex mutex_;
+  port::CondVar bg_cv_;  // Signalled when background work finishes
+  bool should_sleep_;
+  bool sleeping_;
+};
+
+TEST_F(EnvPosixTest, RunImmediately) {
   std::atomic<bool> called(false);
   env_->Schedule(&SetBool, &called);
   Env::Default()->SleepForMicroseconds(kDelayMicros);
   ASSERT_TRUE(called.load(std::memory_order_relaxed));
 }
 
-TEST(EnvPosixTest, RunMany) {
+TEST_F(EnvPosixTest, UnSchedule) {
+  std::atomic<bool> called(false);
+  env_->SetBackgroundThreads(1, Env::LOW);
+
+  /* Block the low priority queue */
+  SleepingBackgroundTask sleeping_task, sleeping_task1;
+  env_->Schedule(&SleepingBackgroundTask::DoSleepTask, &sleeping_task,
+                 Env::Priority::LOW);
+
+  /* Schedule another task */
+  env_->Schedule(&SleepingBackgroundTask::DoSleepTask, &sleeping_task1,
+                 Env::Priority::LOW, &sleeping_task1);
+
+  /* Remove it with a different tag  */
+  ASSERT_EQ(0, env_->UnSchedule(&called, Env::Priority::LOW));
+
+  /* Remove it from the queue with the right tag */
+  ASSERT_EQ(1, env_->UnSchedule(&sleeping_task1, Env::Priority::LOW));
+
+  // Unblock background thread
+  sleeping_task.WakeUp();
+
+  /* Schedule another task */
+  env_->Schedule(&SetBool, &called);
+  for (int i = 0; i < kDelayMicros; i++) {
+    if (called.load(std::memory_order_relaxed)) {
+      break;
+    }
+    Env::Default()->SleepForMicroseconds(1);
+  }
+  ASSERT_TRUE(called.load(std::memory_order_relaxed));
+
+  ASSERT_TRUE(!sleeping_task.IsSleeping() && !sleeping_task1.IsSleeping());
+}
+
+TEST_F(EnvPosixTest, RunMany) {
   std::atomic<int> last_id(0);
 
   struct CB {
@@ -102,7 +178,7 @@ static void ThreadBody(void* arg) {
   s->mu.Unlock();
 }
 
-TEST(EnvPosixTest, StartThread) {
+TEST_F(EnvPosixTest, StartThread) {
   State state;
   state.val = 0;
   state.num_running = 3;
@@ -121,8 +197,7 @@ TEST(EnvPosixTest, StartThread) {
   ASSERT_EQ(state.val, 3);
 }
 
-TEST(EnvPosixTest, TwoPools) {
-
+TEST_F(EnvPosixTest, TwoPools) {
   class CB {
    public:
     CB(const std::string& pool_name, int pool_size)
@@ -141,8 +216,6 @@ TEST(EnvPosixTest, TwoPools) {
       {
         MutexLock l(&mu_);
         num_running_++;
-        std::cout << "Pool " << pool_name_ << ": "
-                  << num_running_ << " running threads.\n";
         // make sure we don't have more than pool_size_ jobs running.
         ASSERT_LE(num_running_, pool_size_.load());
       }
@@ -241,47 +314,7 @@ TEST(EnvPosixTest, TwoPools) {
   env_->SetBackgroundThreads(kHighPoolSize, Env::Priority::HIGH);
 }
 
-TEST(EnvPosixTest, DecreaseNumBgThreads) {
-  class SleepingBackgroundTask {
-   public:
-    explicit SleepingBackgroundTask()
-        : bg_cv_(&mutex_), should_sleep_(true), sleeping_(false) {}
-    void DoSleep() {
-      MutexLock l(&mutex_);
-      sleeping_ = true;
-      while (should_sleep_) {
-        bg_cv_.Wait();
-      }
-      sleeping_ = false;
-      bg_cv_.SignalAll();
-    }
-
-    void WakeUp() {
-      MutexLock l(&mutex_);
-      should_sleep_ = false;
-      bg_cv_.SignalAll();
-
-      while (sleeping_) {
-        bg_cv_.Wait();
-      }
-    }
-
-    bool IsSleeping() {
-      MutexLock l(&mutex_);
-      return sleeping_;
-    }
-
-    static void DoSleepTask(void* arg) {
-      reinterpret_cast<SleepingBackgroundTask*>(arg)->DoSleep();
-    }
-
-   private:
-    port::Mutex mutex_;
-    port::CondVar bg_cv_;  // Signalled when background work finishes
-    bool should_sleep_;
-    bool sleeping_;
-  };
-
+TEST_F(EnvPosixTest, DecreaseNumBgThreads) {
   std::vector<SleepingBackgroundTask> tasks(10);
 
   // Set number of thread to 1 first.
@@ -476,7 +509,7 @@ std::string GetOnDiskTestDir() {
 }  // namespace
 
 // Only works in linux platforms
-TEST(EnvPosixTest, RandomAccessUniqueID) {
+TEST_F(EnvPosixTest, RandomAccessUniqueID) {
   // Create file.
   const EnvOptions soptions;
   std::string fname = GetOnDiskTestDir() + "/" + "testfile";
@@ -517,7 +550,7 @@ TEST(EnvPosixTest, RandomAccessUniqueID) {
 
 // only works in linux platforms
 #ifdef ROCKSDB_FALLOCATE_PRESENT
-TEST(EnvPosixTest, AllocateTest) {
+TEST_F(EnvPosixTest, AllocateTest) {
   std::string fname = GetOnDiskTestDir() + "/preallocate_testfile";
 
   // Try fallocate in a file to see whether the target file system supports it.
@@ -596,7 +629,7 @@ bool HasPrefix(const std::unordered_set<std::string>& ss) {
 }
 
 // Only works in linux platforms
-TEST(EnvPosixTest, RandomAccessUniqueIDConcurrent) {
+TEST_F(EnvPosixTest, RandomAccessUniqueIDConcurrent) {
   // Check whether a bunch of concurrently existing files have unique IDs.
   const EnvOptions soptions;
 
@@ -635,7 +668,7 @@ TEST(EnvPosixTest, RandomAccessUniqueIDConcurrent) {
 }
 
 // Only works in linux platforms
-TEST(EnvPosixTest, RandomAccessUniqueIDDeletes) {
+TEST_F(EnvPosixTest, RandomAccessUniqueIDDeletes) {
   const EnvOptions soptions;
 
   std::string fname = GetOnDiskTestDir() + "/" + "testfile";
@@ -671,7 +704,7 @@ TEST(EnvPosixTest, RandomAccessUniqueIDDeletes) {
 }
 
 // Only works in linux platforms
-TEST(EnvPosixTest, InvalidateCache) {
+TEST_F(EnvPosixTest, InvalidateCache) {
   const EnvOptions soptions;
   std::string fname = test::TmpDir() + "/" + "testfile";
 
@@ -713,7 +746,7 @@ TEST(EnvPosixTest, InvalidateCache) {
 #endif  // not TRAVIS
 #endif  // OS_LINUX
 
-TEST(EnvPosixTest, PosixRandomRWFileTest) {
+TEST_F(EnvPosixTest, PosixRandomRWFileTest) {
   EnvOptions soptions;
   soptions.use_mmap_writes = soptions.use_mmap_reads = false;
   std::string fname = test::TmpDir() + "/" + "testfile";
@@ -737,6 +770,7 @@ TEST(EnvPosixTest, PosixRandomRWFileTest) {
 
 class TestLogger : public Logger {
  public:
+  using Logger::Logv;
   virtual void Logv(const char* format, va_list ap) override {
     log_count++;
 
@@ -770,7 +804,7 @@ class TestLogger : public Logger {
   int char_0_count;
 };
 
-TEST(EnvPosixTest, LogBufferTest) {
+TEST_F(EnvPosixTest, LogBufferTest) {
   TestLogger test_logger;
   test_logger.SetInfoLogLevel(InfoLogLevel::INFO_LEVEL);
   test_logger.log_count = 0;
@@ -810,6 +844,7 @@ TEST(EnvPosixTest, LogBufferTest) {
 class TestLogger2 : public Logger {
  public:
   explicit TestLogger2(size_t max_log_size) : max_log_size_(max_log_size) {}
+  using Logger::Logv;
   virtual void Logv(const char* format, va_list ap) override {
     char new_format[2000];
     std::fill_n(new_format, sizeof(new_format), '2');
@@ -827,7 +862,7 @@ class TestLogger2 : public Logger {
   size_t max_log_size_;
 };
 
-TEST(EnvPosixTest, LogBufferMaxSizeTest) {
+TEST_F(EnvPosixTest, LogBufferMaxSizeTest) {
   char bytes9000[9000];
   std::fill_n(bytes9000, sizeof(bytes9000), '1');
   bytes9000[sizeof(bytes9000) - 1] = '\0';
@@ -842,7 +877,7 @@ TEST(EnvPosixTest, LogBufferMaxSizeTest) {
   }
 }
 
-TEST(EnvPosixTest, Preallocation) {
+TEST_F(EnvPosixTest, Preallocation) {
   const std::string src = test::TmpDir() + "/" + "testfile";
   unique_ptr<WritableFile> srcfile;
   const EnvOptions soptions;
@@ -875,5 +910,6 @@ TEST(EnvPosixTest, Preallocation) {
 }  // namespace rocksdb
 
 int main(int argc, char** argv) {
-  return rocksdb::test::RunAllTests();
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
 }

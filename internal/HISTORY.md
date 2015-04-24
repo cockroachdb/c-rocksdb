@@ -1,6 +1,48 @@
 # Rocksdb Change Log
 
-### 3.9.0 (12/8/2014)
+## 3.10.0 (3/24/2015)
+### New Features
+* GetThreadStatus() is now able to report detailed thread status, including:
+ - Thread Operation including flush and compaction.
+ - The stage of the current thread operation.
+ - The elapsed time in micros since the current thread operation started.
+ More information can be found in include/rocksdb/thread_status.h.  In addition, when running db_bench with --thread_status_per_interval, db_bench will also report thread status periodically.
+* Changed the LRU caching algorithm so that referenced blocks (by iterators) are never evicted. This change made parameter removeScanCountLimit obsolete. Because of that NewLRUCache doesn't take three arguments anymore. table_cache_remove_scan_limit option is also removed
+* By default we now optimize the compilation for the compilation platform (using -march=native). If you want to build portable binary, use 'PORTABLE=1' before the make command.
+* We now allow level-compaction to place files in different paths by
+  specifying them in db_paths along with the target_size.
+  Lower numbered levels will be placed earlier in the db_paths and higher
+  numbered levels will be placed later in the db_paths vector.
+* Potentially big performance improvements if you're using RocksDB with lots of column families (100-1000)
+* Added BlockBasedTableOptions.format_version option, which allows user to specify which version of block based table he wants. As a general guidline, newer versions have more features, but might not be readable by older versions of RocksDB.
+* Added new block based table format (version 2), which you can enable by setting BlockBasedTableOptions.format_version = 2. This format changes how we encode size information in compressed blocks and should help with memory allocations if you're using Zlib or BZip2 compressions.
+* MemEnv (env that stores data in memory) is now available in default library build. You can create it by calling NewMemEnv().
+* Add SliceTransform.SameResultWhenAppended() to help users determine it is safe to apply prefix bloom/hash.
+* Block based table now makes use of prefix bloom filter if it is a full fulter.
+* Block based table remembers whether a whole key or prefix based bloom filter is supported in SST files. Do a sanity check when reading the file with users' configuration.
+* Fixed a bug in ReadOnlyBackupEngine that deleted corrupted backups in some cases, even though the engine was ReadOnly
+* options.level_compaction_dynamic_level_bytes, a feature to allow RocksDB to pick dynamic base of bytes for levels. With this feature turned on, we will automatically adjust max bytes for each level. The goal of this feature is to have lower bound on size amplification. For more details, see comments in options.h.
+* Added an abstract base class WriteBatchBase for write batches
+* Fixed a bug where we start deleting files of a dropped column families even if there are still live references to it
+
+### Public API changes
+* Deprecated skip_log_error_on_recovery and table_cache_remove_scan_count_limit options.
+* Logger method logv with log level parameter is now virtual
+
+### RocksJava
+* Added compression per level API.
+* MemEnv is now available in RocksJava via RocksMemEnv class.
+* lz4 compression is now included in rocksjava static library when running `make rocksdbjavastatic`.
+* Overflowing a size_t when setting rocksdb options now throws an IllegalArgumentException, which removes the necessity for a developer to catch these Exceptions explicitly.
+
+## 3.9.0 (12/8/2014)
+
+### New Features
+* Add rocksdb::GetThreadList(), which in the future will return the current status of all
+  rocksdb-related threads.  We will have more code instruments in the following RocksDB
+  releases.
+* Change convert function in rocksdb/utilities/convenience.h to return Status instead of boolean.
+  Also add support for nested options in convert function
 
 ### Public API changes
 * New API to create a checkpoint added. Given a directory name, creates a new

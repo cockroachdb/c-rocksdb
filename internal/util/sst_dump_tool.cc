@@ -5,82 +5,17 @@
 //
 #ifndef ROCKSDB_LITE
 
-#include "rocksdb/sst_dump_tool.h"
+#include "util/sst_dump_tool_imp.h"
 
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS
 #endif
 
-#include <map>
-#include <string>
-#include <vector>
 #include <inttypes.h>
-
-#include "db/dbformat.h"
-#include "db/memtable.h"
-#include "db/write_batch_internal.h"
-#include "rocksdb/db.h"
-#include "rocksdb/env.h"
-#include "rocksdb/immutable_options.h"
-#include "rocksdb/iterator.h"
-#include "rocksdb/slice_transform.h"
-#include "rocksdb/status.h"
-#include "rocksdb/table.h"
-#include "rocksdb/table_properties.h"
-#include "table/block.h"
-#include "table/block_based_table_factory.h"
-#include "table/block_builder.h"
-#include "table/format.h"
-#include "table/meta_blocks.h"
-#include "table/plain_table_factory.h"
-#include "util/ldb_cmd.h"
-#include "util/random.h"
-#include "util/testharness.h"
-#include "util/testutil.h"
 
 namespace rocksdb {
 
-class SstFileReader {
- public:
-  explicit SstFileReader(const std::string& file_name,
-                         bool verify_checksum,
-                         bool output_hex);
-
-  Status ReadSequential(bool print_kv,
-                        uint64_t read_num,
-                        bool has_from,
-                        const std::string& from_key,
-                        bool has_to,
-                        const std::string& to_key);
-
-  Status ReadTableProperties(
-      std::shared_ptr<const TableProperties>* table_properties);
-  uint64_t GetReadNumber() { return read_num_; }
-  TableProperties* GetInitTableProperties() { return table_properties_.get(); }
-
- private:
-  Status NewTableReader(const std::string& file_path);
-  Status ReadTableProperties(uint64_t table_magic_number,
-                             RandomAccessFile* file, uint64_t file_size);
-  Status SetTableOptionsByMagicNumber(uint64_t table_magic_number);
-  Status SetOldTableOptions();
-
-  std::string file_name_;
-  uint64_t read_num_;
-  bool verify_checksum_;
-  bool output_hex_;
-  EnvOptions soptions_;
-
-  Status init_result_;
-  unique_ptr<TableReader> table_reader_;
-  unique_ptr<RandomAccessFile> file_;
-  // options_ and internal_comparator_ will also be used in
-  // ReadSequential internally (specifically, seek-related operations)
-  Options options_;
-  const ImmutableCFOptions ioptions_;
-  InternalKeyComparator internal_comparator_;
-  unique_ptr<TableProperties> table_properties_;
-};
+using std::dynamic_pointer_cast;
 
 SstFileReader::SstFileReader(const std::string& file_path,
                              bool verify_checksum,
@@ -90,7 +25,7 @@ SstFileReader::SstFileReader(const std::string& file_path,
     internal_comparator_(BytewiseComparator()) {
   fprintf(stdout, "Process %s\n", file_path.c_str());
 
-  init_result_ = NewTableReader(file_name_);
+  init_result_ = GetTableReader(file_name_);
 }
 
 extern const uint64_t kBlockBasedTableMagicNumber;
@@ -98,7 +33,7 @@ extern const uint64_t kLegacyBlockBasedTableMagicNumber;
 extern const uint64_t kPlainTableMagicNumber;
 extern const uint64_t kLegacyPlainTableMagicNumber;
 
-Status SstFileReader::NewTableReader(const std::string& file_path) {
+Status SstFileReader::GetTableReader(const std::string& file_path) {
   uint64_t magic_number;
 
   // read table magic number
@@ -133,10 +68,42 @@ Status SstFileReader::NewTableReader(const std::string& file_path) {
   }
 
   if (s.ok()) {
-    s = options_.table_factory->NewTableReader(
-        ioptions_, soptions_, internal_comparator_, std::move(file_), file_size,
-        &table_reader_);
+    s = NewTableReader(ioptions_, soptions_, internal_comparator_,
+                       std::move(file_), file_size, &table_reader_);
   }
+  return s;
+}
+
+Status SstFileReader::NewTableReader(
+    const ImmutableCFOptions& ioptions, const EnvOptions& soptions,
+    const InternalKeyComparator& internal_comparator,
+    unique_ptr<RandomAccessFile>&& file, uint64_t file_size,
+    unique_ptr<TableReader>* table_reader) {
+  // We need to turn off pre-fetching of index and filter nodes for
+  // BlockBasedTable
+  shared_ptr<BlockBasedTableFactory> block_table_factory =
+      dynamic_pointer_cast<BlockBasedTableFactory>(options_.table_factory);
+
+  if (block_table_factory) {
+    return block_table_factory->NewTableReader(
+        ioptions_, soptions_, internal_comparator_, std::move(file_), file_size,
+        &table_reader_, /*enable_prefetch=*/false);
+  }
+
+  assert(!block_table_factory);
+
+  // For all other factory implementation
+  return options_.table_factory->NewTableReader(
+      ioptions_, soptions_, internal_comparator_, std::move(file_), file_size,
+      &table_reader_);
+}
+
+Status SstFileReader::DumpTable(const std::string& out_filename) {
+  unique_ptr<WritableFile> out_file;
+  Env* env = Env::Default();
+  env->NewWritableFile(out_filename, &out_file, soptions_);
+  Status s = table_reader_->DumpTable(out_file.get());
+  out_file->Close();
   return s;
 }
 
@@ -273,7 +240,7 @@ namespace {
 
 void print_help() {
   fprintf(stderr,
-          "sst_dump [--command=check|scan|none] [--verify_checksum] "
+          "sst_dump [--command=check|scan|none|raw] [--verify_checksum] "
           "--file=data_dir_OR_sst_file"
           " [--output_hex]"
           " [--input_key_hex]"
@@ -302,7 +269,7 @@ string HexToString(const string& str) {
 
 }  // namespace
 
-void SSTDumpTool::Run(int argc, char** argv) {
+int SSTDumpTool::Run(int argc, char** argv) {
   const char* dir_or_file = nullptr;
   uint64_t read_num = -1;
   std::string command;
@@ -385,11 +352,32 @@ void SSTDumpTool::Run(int argc, char** argv) {
     if (dir) {
       filename = std::string(dir_or_file) + "/" + filename;
     }
+
     rocksdb::SstFileReader reader(filename, verify_checksum,
                                   output_hex);
+    if (!reader.getStatus().ok()) {
+      fprintf(stderr, "%s: %s\n", filename.c_str(),
+              reader.getStatus().ToString().c_str());
+      exit(1);
+    }
+
+    if (command == "raw") {
+      std::string out_filename = filename.substr(0, filename.length() - 4);
+      out_filename.append("_dump.txt");
+
+      st = reader.DumpTable(out_filename);
+      if (!st.ok()) {
+        fprintf(stderr, "%s: %s\n", filename.c_str(), st.ToString().c_str());
+        exit(1);
+      } else {
+        fprintf(stdout, "raw dump written to file %s\n", &out_filename[0]);
+      }
+      continue;
+    }
+
     // scan all files in give file path.
     if (command == "" || command == "scan" || command == "check") {
-      st = reader.ReadSequential(command != "check",
+      st = reader.ReadSequential(command == "scan",
                                  read_num > 0 ? (read_num - total_read) :
                                                 read_num,
                                  has_from, from_key, has_to, to_key);
@@ -427,6 +415,7 @@ void SSTDumpTool::Run(int argc, char** argv) {
       }
     }
   }
+  return 0;
 }
 }  // namespace rocksdb
 

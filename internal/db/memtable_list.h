@@ -22,13 +22,14 @@
 #include "rocksdb/iterator.h"
 #include "rocksdb/options.h"
 #include "util/autovector.h"
+#include "util/instrumented_mutex.h"
 #include "util/log_buffer.h"
 
 namespace rocksdb {
 
 class ColumnFamilyData;
 class InternalKeyComparator;
-class Mutex;
+class InstrumentedMutex;
 class MergeIteratorBuilder;
 
 // keeps a list of immutable memtables in a vector. the list is immutable
@@ -55,6 +56,8 @@ class MemTableListVersion {
                     MergeIteratorBuilder* merge_iter_builder);
 
   uint64_t GetTotalNumEntries() const;
+
+  uint64_t GetTotalNumDeletes() const;
 
  private:
   // REQUIRE: m is mutable memtable
@@ -113,7 +116,7 @@ class MemTableList {
   // Commit a successful flush in the manifest file
   Status InstallMemtableFlushResults(
       ColumnFamilyData* cfd, const MutableCFOptions& mutable_cf_options,
-      const autovector<MemTable*>& m, VersionSet* vset, port::Mutex* mu,
+      const autovector<MemTable*>& m, VersionSet* vset, InstrumentedMutex* mu,
       uint64_t file_number, autovector<MemTable*>* to_delete,
       Directory* db_directory, LogBuffer* log_buffer);
 

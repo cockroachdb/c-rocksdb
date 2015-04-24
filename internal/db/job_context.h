@@ -20,7 +20,7 @@ class MemTable;
 
 struct JobContext {
   inline bool HaveSomethingToDelete() const {
-    return candidate_files.size() || sst_delete_files.size() ||
+    return full_scan_candidate_files.size() || sst_delete_files.size() ||
            log_delete_files.size() || new_superversion != nullptr ||
            superversions_to_free.size() > 0 || memtables_to_free.size() > 0;
   }
@@ -36,10 +36,14 @@ struct JobContext {
     }
   };
 
+  // Unique job id
+  int job_id;
+
   // a list of all files that we'll consider deleting
   // (every once in a while this is filled up with all files
   // in the DB directory)
-  std::vector<CandidateFileInfo> candidate_files;
+  // (filled only if we're doing full scan)
+  std::vector<CandidateFileInfo> full_scan_candidate_files;
 
   // the list of all live sst files that cannot be deleted
   std::vector<FileDescriptor> sst_live;
@@ -66,7 +70,8 @@ struct JobContext {
 
   uint64_t min_pending_output = 0;
 
-  explicit JobContext(bool create_superversion = false) {
+  explicit JobContext(int _job_id, bool create_superversion = false) {
+    job_id = _job_id;
     manifest_file_number = 0;
     pending_manifest_file_number = 0;
     log_number = 0;

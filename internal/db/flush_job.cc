@@ -40,6 +40,8 @@
 #include "table/table_builder.h"
 #include "table/two_level_iterator.h"
 #include "util/coding.h"
+#include "util/event_logger.h"
+#include "util/file_util.h"
 #include "util/logging.h"
 #include "util/log_buffer.h"
 #include "util/mutexlock.h"
@@ -47,6 +49,7 @@
 #include "util/iostats_context_imp.h"
 #include "util/stop_watch.h"
 #include "util/sync_point.h"
+#include "util/thread_status_util.h"
 
 namespace rocksdb {
 
@@ -54,10 +57,13 @@ FlushJob::FlushJob(const std::string& dbname, ColumnFamilyData* cfd,
                    const DBOptions& db_options,
                    const MutableCFOptions& mutable_cf_options,
                    const EnvOptions& env_options, VersionSet* versions,
-                   port::Mutex* db_mutex, std::atomic<bool>* shutting_down,
+                   InstrumentedMutex* db_mutex,
+                   std::atomic<bool>* shutting_down,
                    SequenceNumber newest_snapshot, JobContext* job_context,
                    LogBuffer* log_buffer, Directory* db_directory,
-                   CompressionType output_compression, Statistics* stats)
+                   Directory* output_file_directory,
+                   CompressionType output_compression, Statistics* stats,
+                   EventLogger* event_logger)
     : dbname_(dbname),
       cfd_(cfd),
       db_options_(db_options),
@@ -70,10 +76,24 @@ FlushJob::FlushJob(const std::string& dbname, ColumnFamilyData* cfd,
       job_context_(job_context),
       log_buffer_(log_buffer),
       db_directory_(db_directory),
+      output_file_directory_(output_file_directory),
       output_compression_(output_compression),
-      stats_(stats) {}
+      stats_(stats),
+      event_logger_(event_logger) {
+  // Update the thread status to indicate flush.
+  ThreadStatusUtil::SetColumnFamily(cfd_);
+  ThreadStatusUtil::SetThreadOperation(ThreadStatus::OP_FLUSH);
+  TEST_SYNC_POINT("FlushJob::FlushJob()");
+}
+
+FlushJob::~FlushJob() {
+  TEST_SYNC_POINT("FlushJob::~FlushJob()");
+  ThreadStatusUtil::ResetThreadStatus();
+}
 
 Status FlushJob::Run(uint64_t* file_number) {
+  AutoThreadOperationStageUpdater stage_run(
+      ThreadStatus::STAGE_FLUSH_RUN);
   // Save the contents of the earliest memtable as a new Table
   uint64_t fn;
   autovector<MemTable*> mems;
@@ -83,6 +103,7 @@ Status FlushJob::Run(uint64_t* file_number) {
                 cfd_->GetName().c_str());
     return Status::OK();
   }
+
 
   // entries mems are (implicitly) sorted in ascending order by their created
   // time. We will use the first memtable's `edit` to keep the meta info for
@@ -116,18 +137,20 @@ Status FlushJob::Run(uint64_t* file_number) {
   if (s.ok() && file_number != nullptr) {
     *file_number = fn;
   }
+
   return s;
 }
 
 Status FlushJob::WriteLevel0Table(const autovector<MemTable*>& mems,
                                   VersionEdit* edit, uint64_t* filenumber) {
+  AutoThreadOperationStageUpdater stage_updater(
+      ThreadStatus::STAGE_FLUSH_WRITE_L0);
   db_mutex_->AssertHeld();
   const uint64_t start_micros = db_options_.env->NowMicros();
   FileMetaData meta;
-
+  // path 0 for level 0 file.
   meta.fd = FileDescriptor(versions_->NewFileNumber(), 0, 0);
   *filenumber = meta.fd.GetNumber();
-  // path 0 for level 0 file.
 
   const SequenceNumber earliest_seqno_in_memtable =
       mems[0]->GetFirstSequenceNumber();
@@ -145,8 +168,8 @@ Status FlushJob::WriteLevel0Table(const autovector<MemTable*>& mems,
     Arena arena;
     for (MemTable* m : mems) {
       Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log,
-          "[%s] Flushing memtable with next log file: %" PRIu64 "\n",
-          cfd_->GetName().c_str(), m->GetNextLogNumber());
+          "[%s] [JOB %d] Flushing memtable with next log file: %" PRIu64 "\n",
+          cfd_->GetName().c_str(), job_context_->job_id, m->GetNextLogNumber());
       memtables.push_back(m->NewIterator(ro, &arena));
     }
     {
@@ -154,8 +177,8 @@ Status FlushJob::WriteLevel0Table(const autovector<MemTable*>& mems,
           NewMergingIterator(&cfd_->internal_comparator(), &memtables[0],
                              static_cast<int>(memtables.size()), &arena));
       Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log,
-          "[%s] Level-0 flush table #%" PRIu64 ": started",
-          cfd_->GetName().c_str(), meta.fd.GetNumber());
+          "[%s] [JOB %d] Level-0 flush table #%" PRIu64 ": started",
+          cfd_->GetName().c_str(), job_context_->job_id, meta.fd.GetNumber());
 
       s = BuildTable(dbname_, db_options_.env, *cfd_->ioptions(), env_options_,
                      cfd_->table_cache(), iter.get(), &meta,
@@ -165,12 +188,15 @@ Status FlushJob::WriteLevel0Table(const autovector<MemTable*>& mems,
       LogFlush(db_options_.info_log);
     }
     Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log,
-        "[%s] Level-0 flush table #%" PRIu64 ": %" PRIu64 " bytes %s",
-        cfd_->GetName().c_str(), meta.fd.GetNumber(), meta.fd.GetFileSize(),
-        s.ToString().c_str());
-
-    if (!db_options_.disableDataSync && db_directory_ != nullptr) {
-      db_directory_->Fsync();
+        "[%s] [JOB %d] Level-0 flush table #%" PRIu64 ": %" PRIu64 " bytes %s",
+        cfd_->GetName().c_str(), job_context_->job_id, meta.fd.GetNumber(),
+        meta.fd.GetFileSize(), s.ToString().c_str());
+    event_logger_->Log() << "event"
+                         << "table_file_creation"
+                         << "file_number" << meta.fd.GetNumber() << "file_size"
+                         << meta.fd.GetFileSize();
+    if (!db_options_.disableDataSync && output_file_directory_ != nullptr) {
+      output_file_directory_->Fsync();
     }
     db_mutex_->Lock();
   }
@@ -194,6 +220,12 @@ Status FlushJob::WriteLevel0Table(const autovector<MemTable*>& mems,
         cfd_->ioptions()->compaction_style == kCompactionStyleLevel) {
       level = base->storage_info()->PickLevelForMemTableOutput(
           mutable_cf_options_, min_user_key, max_user_key);
+      // If level does not match path id, reset level back to 0
+      uint32_t fdpath = LevelCompactionPicker::GetPathId(
+          *cfd_->ioptions(), mutable_cf_options_, level);
+      if (fdpath != 0) {
+        level = 0;
+      }
     }
     edit->AddFile(level, meta.fd.GetNumber(), meta.fd.GetPathId(),
                   meta.fd.GetFileSize(), meta.smallest, meta.largest,

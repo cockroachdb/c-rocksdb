@@ -31,7 +31,7 @@
 namespace rocksdb {
 
 Status DBImpl::DisableFileDeletions() {
-  MutexLock l(&mutex_);
+  InstrumentedMutexLock l(&mutex_);
   ++disable_delete_obsolete_files_;
   if (disable_delete_obsolete_files_ == 1) {
     Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log,
@@ -45,10 +45,12 @@ Status DBImpl::DisableFileDeletions() {
 }
 
 Status DBImpl::EnableFileDeletions(bool force) {
-  JobContext job_context;
+  // Job id == 0 means that this is not our background process, but rather
+  // user thread
+  JobContext job_context(0);
   bool should_purge_files = false;
   {
-    MutexLock l(&mutex_);
+    InstrumentedMutexLock l(&mutex_);
     if (force) {
       // if force, we need to enable file deletions right away
       disable_delete_obsolete_files_ = 0;
@@ -90,6 +92,9 @@ Status DBImpl::GetLiveFiles(std::vector<std::string>& ret,
     // flush all dirty data to disk.
     Status status;
     for (auto cfd : *versions_->GetColumnFamilySet()) {
+      if (cfd->IsDropped()) {
+        continue;
+      }
       cfd->Ref();
       mutex_.Unlock();
       status = FlushMemTable(cfd, FlushOptions());
@@ -112,6 +117,9 @@ Status DBImpl::GetLiveFiles(std::vector<std::string>& ret,
   // Make a set of all of the live *.sst files
   std::vector<FileDescriptor> live;
   for (auto cfd : *versions_->GetColumnFamilySet()) {
+    if (cfd->IsDropped()) {
+      continue;
+    }
     cfd->current()->AddLiveFiles(&live);
   }
 

@@ -33,12 +33,14 @@
 #include "table/block_builder.h"
 #include "table/filter_block.h"
 #include "table/block_based_filter_block.h"
+#include "table/block_based_table_factory.h"
 #include "table/full_filter_block.h"
 #include "table/format.h"
 #include "table/meta_blocks.h"
 #include "table/table_builder.h"
 
 #include "util/coding.h"
+#include "util/compression.h"
 #include "util/crc32c.h"
 #include "util/stop_watch.h"
 #include "util/xxhash.h"
@@ -291,7 +293,8 @@ FilterBlockBuilder* CreateFilterBlockBuilder(const ImmutableCFOptions& opt,
   if (filter_bits_builder == nullptr) {
     return new BlockBasedFilterBlockBuilder(opt.prefix_extractor, table_opt);
   } else {
-    return new FullFilterBlockBuilder(opt.prefix_extractor, table_opt,
+    return new FullFilterBlockBuilder(opt.prefix_extractor,
+                                      table_opt.whole_key_filtering,
                                       filter_bits_builder);
   }
 }
@@ -301,9 +304,11 @@ bool GoodCompressionRatio(size_t compressed_size, size_t raw_size) {
   return compressed_size < raw_size - (raw_size / 8u);
 }
 
+// format_version is the block format as defined in include/rocksdb/table.h
 Slice CompressBlock(const Slice& raw,
                     const CompressionOptions& compression_options,
-                    CompressionType* type, std::string* compressed_output) {
+                    CompressionType* type, uint32_t format_version,
+                    std::string* compressed_output) {
   if (*type == kNoCompression) {
     return raw;
   }
@@ -312,36 +317,44 @@ Slice CompressBlock(const Slice& raw,
   // supported in this platform and (2) the compression rate is "good enough".
   switch (*type) {
     case kSnappyCompression:
-      if (port::Snappy_Compress(compression_options, raw.data(), raw.size(),
-                                compressed_output) &&
+      if (Snappy_Compress(compression_options, raw.data(), raw.size(),
+                          compressed_output) &&
           GoodCompressionRatio(compressed_output->size(), raw.size())) {
         return *compressed_output;
       }
       break;  // fall back to no compression.
     case kZlibCompression:
-      if (port::Zlib_Compress(compression_options, raw.data(), raw.size(),
-                              compressed_output) &&
+      if (Zlib_Compress(
+              compression_options,
+              GetCompressFormatForVersion(kZlibCompression, format_version),
+              raw.data(), raw.size(), compressed_output) &&
           GoodCompressionRatio(compressed_output->size(), raw.size())) {
         return *compressed_output;
       }
       break;  // fall back to no compression.
     case kBZip2Compression:
-      if (port::BZip2_Compress(compression_options, raw.data(), raw.size(),
-                               compressed_output) &&
+      if (BZip2_Compress(
+              compression_options,
+              GetCompressFormatForVersion(kBZip2Compression, format_version),
+              raw.data(), raw.size(), compressed_output) &&
           GoodCompressionRatio(compressed_output->size(), raw.size())) {
         return *compressed_output;
       }
       break;  // fall back to no compression.
     case kLZ4Compression:
-      if (port::LZ4_Compress(compression_options, raw.data(), raw.size(),
-                             compressed_output) &&
+      if (LZ4_Compress(
+              compression_options,
+              GetCompressFormatForVersion(kLZ4Compression, format_version),
+              raw.data(), raw.size(), compressed_output) &&
           GoodCompressionRatio(compressed_output->size(), raw.size())) {
         return *compressed_output;
       }
       break;  // fall back to no compression.
     case kLZ4HCCompression:
-      if (port::LZ4HC_Compress(compression_options, raw.data(), raw.size(),
-                               compressed_output) &&
+      if (LZ4HC_Compress(
+              compression_options,
+              GetCompressFormatForVersion(kLZ4HCCompression, format_version),
+              raw.data(), raw.size(), compressed_output) &&
           GoodCompressionRatio(compressed_output->size(), raw.size())) {
         return *compressed_output;
       }
@@ -376,34 +389,43 @@ class BlockBasedTableBuilder::BlockBasedTablePropertiesCollector
     : public TablePropertiesCollector {
  public:
   explicit BlockBasedTablePropertiesCollector(
-      BlockBasedTableOptions::IndexType index_type)
-      : index_type_(index_type) {}
+      BlockBasedTableOptions::IndexType index_type, bool whole_key_filtering,
+      bool prefix_filtering)
+      : index_type_(index_type),
+        whole_key_filtering_(whole_key_filtering),
+        prefix_filtering_(prefix_filtering) {}
 
-  virtual Status Add(const Slice& key, const Slice& value) {
+  virtual Status Add(const Slice& key, const Slice& value) override {
     // Intentionally left blank. Have no interest in collecting stats for
     // individual key/value pairs.
     return Status::OK();
   }
 
-  virtual Status Finish(UserCollectedProperties* properties) {
+  virtual Status Finish(UserCollectedProperties* properties) override {
     std::string val;
     PutFixed32(&val, static_cast<uint32_t>(index_type_));
     properties->insert({BlockBasedTablePropertyNames::kIndexType, val});
+    properties->insert({BlockBasedTablePropertyNames::kWholeKeyFiltering,
+                        whole_key_filtering_ ? kPropTrue : kPropFalse});
+    properties->insert({BlockBasedTablePropertyNames::kPrefixFiltering,
+                        prefix_filtering_ ? kPropTrue : kPropFalse});
     return Status::OK();
   }
 
   // The name of the properties collector can be used for debugging purpose.
-  virtual const char* Name() const {
+  virtual const char* Name() const override {
     return "BlockBasedTablePropertiesCollector";
   }
 
-  virtual UserCollectedProperties GetReadableProperties() const {
+  virtual UserCollectedProperties GetReadableProperties() const override {
     // Intentionally left blank.
     return UserCollectedProperties();
   }
 
  private:
   BlockBasedTableOptions::IndexType index_type_;
+  bool whole_key_filtering_;
+  bool prefix_filtering_;
 };
 
 struct BlockBasedTableBuilder::Rep {
@@ -440,7 +462,7 @@ struct BlockBasedTableBuilder::Rep {
       const BlockBasedTableOptions& table_opt,
       const InternalKeyComparator& icomparator, WritableFile* f,
       const CompressionType _compression_type,
-      const CompressionOptions& _compression_opts)
+      const CompressionOptions& _compression_opts, const bool skip_filters)
       : ioptions(_ioptions),
         table_options(table_opt),
         internal_comparator(icomparator),
@@ -452,7 +474,8 @@ struct BlockBasedTableBuilder::Rep {
                                          &this->internal_prefix_transform)),
         compression_type(_compression_type),
         compression_opts(_compression_opts),
-        filter_block(CreateFilterBlockBuilder(_ioptions, table_options)),
+        filter_block(skip_filters ? nullptr : CreateFilterBlockBuilder(
+                                                  _ioptions, table_options)),
         flush_block_policy(
             table_options.flush_block_policy_factory->NewFlushBlockPolicy(
                 table_options, data_block)) {
@@ -462,7 +485,9 @@ struct BlockBasedTableBuilder::Rep {
           collector_factories->CreateTablePropertiesCollector());
     }
     table_properties_collectors.emplace_back(
-        new BlockBasedTablePropertiesCollector(table_options.index_type));
+        new BlockBasedTablePropertiesCollector(
+            table_options.index_type, table_options.whole_key_filtering,
+            _ioptions.prefix_extractor != nullptr));
   }
 };
 
@@ -471,9 +496,21 @@ BlockBasedTableBuilder::BlockBasedTableBuilder(
     const BlockBasedTableOptions& table_options,
     const InternalKeyComparator& internal_comparator, WritableFile* file,
     const CompressionType compression_type,
-    const CompressionOptions& compression_opts)
-    : rep_(new Rep(ioptions, table_options, internal_comparator,
-                   file, compression_type, compression_opts)) {
+    const CompressionOptions& compression_opts, const bool skip_filters) {
+  BlockBasedTableOptions sanitized_table_options(table_options);
+  if (sanitized_table_options.format_version == 0 &&
+      sanitized_table_options.checksum != kCRC32c) {
+    Log(InfoLogLevel::WARN_LEVEL, ioptions.info_log,
+        "Silently converting format_version to 1 because checksum is "
+        "non-default");
+    // silently convert format_version to 1 to keep consistent with current
+    // behavior
+    sanitized_table_options.format_version = 1;
+  }
+
+  rep_ = new Rep(ioptions, sanitized_table_options, internal_comparator, file,
+                 compression_type, compression_opts, skip_filters);
+
   if (rep_->filter_block != nullptr) {
     rep_->filter_block->StartBlock(0);
   }
@@ -567,7 +604,7 @@ void BlockBasedTableBuilder::WriteBlock(const Slice& raw_block_contents,
   if (raw_block_contents.size() < kCompressionSizeLimit) {
     block_contents =
         CompressBlock(raw_block_contents, r->compression_opts, &type,
-                      &r->compressed_output);
+                      r->table_options.format_version, &r->compressed_output);
   } else {
     RecordTick(r->ioptions.statistics, NUMBER_BLOCK_NOT_COMPRESSED);
     type = kNoCompression;
@@ -770,9 +807,13 @@ Status BlockBasedTableBuilder::Finish() {
     // TODO(icanadi) at some point in the future, when we're absolutely sure
     // nobody will roll back to RocksDB 2.x versions, retire the legacy magic
     // number and always write new table files with new magic number
-    bool legacy = (r->table_options.checksum == kCRC32c);
+    bool legacy = (r->table_options.format_version == 0);
+    // this is guaranteed by BlockBasedTableBuilder's constructor
+    assert(r->table_options.checksum == kCRC32c ||
+           r->table_options.format_version != 0);
     Footer footer(legacy ? kLegacyBlockBasedTableMagicNumber
-                         : kBlockBasedTableMagicNumber);
+                         : kBlockBasedTableMagicNumber,
+                  r->table_options.format_version);
     footer.set_metaindex_handle(metaindex_block_handle);
     footer.set_index_handle(index_block_handle);
     footer.set_checksum(r->table_options.checksum);
@@ -825,5 +866,4 @@ uint64_t BlockBasedTableBuilder::FileSize() const {
 
 const std::string BlockBasedTable::kFilterBlockPrefix = "filter.";
 const std::string BlockBasedTable::kFullFilterBlockPrefix = "fullfilter.";
-
 }  // namespace rocksdb

@@ -69,18 +69,10 @@ struct TestHandler : public WriteBatch::Handler {
 };
 }  // namespace anonymous
 
-class WriteBatchWithIndexTest {};
+class WriteBatchWithIndexTest : public testing::Test {};
 
-TEST(WriteBatchWithIndexTest, TestValueAsSecondaryIndex) {
-  Entry entries[] = {{"aaa", "0005", kPutRecord},
-                     {"b", "0002", kPutRecord},
-                     {"cdd", "0002", kMergeRecord},
-                     {"aab", "00001", kPutRecord},
-                     {"cc", "00005", kPutRecord},
-                     {"cdd", "0002", kPutRecord},
-                     {"aab", "0003", kPutRecord},
-                     {"cc", "00005", kDeleteRecord}, };
-
+void TestValueAsSecondaryIndexHelper(std::vector<Entry> entries,
+                                     WriteBatchWithIndex* batch) {
   // In this test, we insert <key, value> to column family `data`, and
   // <value, key> to column family `index`. Then iterator them in order
   // and seek them by key.
@@ -94,32 +86,31 @@ TEST(WriteBatchWithIndexTest, TestValueAsSecondaryIndex) {
     index_map[e.value].push_back(&e);
   }
 
-  WriteBatchWithIndex batch(nullptr, 20);
   ColumnFamilyHandleImplDummy data(6, BytewiseComparator());
   ColumnFamilyHandleImplDummy index(8, BytewiseComparator());
   for (auto& e : entries) {
     if (e.type == kPutRecord) {
-      batch.Put(&data, e.key, e.value);
-      batch.Put(&index, e.value, e.key);
+      batch->Put(&data, e.key, e.value);
+      batch->Put(&index, e.value, e.key);
     } else if (e.type == kMergeRecord) {
-      batch.Merge(&data, e.key, e.value);
-      batch.Put(&index, e.value, e.key);
+      batch->Merge(&data, e.key, e.value);
+      batch->Put(&index, e.value, e.key);
     } else {
       assert(e.type == kDeleteRecord);
-      std::unique_ptr<WBWIIterator> iter(batch.NewIterator(&data));
+      std::unique_ptr<WBWIIterator> iter(batch->NewIterator(&data));
       iter->Seek(e.key);
       ASSERT_OK(iter->status());
       auto& write_entry = iter->Entry();
       ASSERT_EQ(e.key, write_entry.key.ToString());
       ASSERT_EQ(e.value, write_entry.value.ToString());
-      batch.Delete(&data, e.key);
-      batch.Put(&index, e.value, "");
+      batch->Delete(&data, e.key);
+      batch->Put(&index, e.value, "");
     }
   }
 
   // Iterator all keys
   {
-    std::unique_ptr<WBWIIterator> iter(batch.NewIterator(&data));
+    std::unique_ptr<WBWIIterator> iter(batch->NewIterator(&data));
     for (int seek_to_first : {0, 1}) {
       if (seek_to_first) {
         iter->SeekToFirst();
@@ -160,7 +151,7 @@ TEST(WriteBatchWithIndexTest, TestValueAsSecondaryIndex) {
 
   // Iterator all indexes
   {
-    std::unique_ptr<WBWIIterator> iter(batch.NewIterator(&index));
+    std::unique_ptr<WBWIIterator> iter(batch->NewIterator(&index));
     for (int seek_to_first : {0, 1}) {
       if (seek_to_first) {
         iter->SeekToFirst();
@@ -202,7 +193,7 @@ TEST(WriteBatchWithIndexTest, TestValueAsSecondaryIndex) {
 
   // Seek to every key
   {
-    std::unique_ptr<WBWIIterator> iter(batch.NewIterator(&data));
+    std::unique_ptr<WBWIIterator> iter(batch->NewIterator(&data));
 
     // Seek the keys one by one in reverse order
     for (auto pair = data_map.rbegin(); pair != data_map.rend(); ++pair) {
@@ -224,7 +215,7 @@ TEST(WriteBatchWithIndexTest, TestValueAsSecondaryIndex) {
 
   // Seek to every index
   {
-    std::unique_ptr<WBWIIterator> iter(batch.NewIterator(&index));
+    std::unique_ptr<WBWIIterator> iter(batch->NewIterator(&index));
 
     // Seek the keys one by one in reverse order
     for (auto pair = index_map.rbegin(); pair != index_map.rend(); ++pair) {
@@ -246,12 +237,11 @@ TEST(WriteBatchWithIndexTest, TestValueAsSecondaryIndex) {
 
   // Verify WriteBatch can be iterated
   TestHandler handler;
-  batch.GetWriteBatch()->Iterate(&handler);
+  batch->GetWriteBatch()->Iterate(&handler);
 
   // Verify data column family
   {
-    ASSERT_EQ(sizeof(entries) / sizeof(Entry),
-              handler.seen[data.GetID()].size());
+    ASSERT_EQ(entries.size(), handler.seen[data.GetID()].size());
     size_t i = 0;
     for (auto e : handler.seen[data.GetID()]) {
       auto write_entry = entries[i++];
@@ -265,8 +255,7 @@ TEST(WriteBatchWithIndexTest, TestValueAsSecondaryIndex) {
 
   // Verify index column family
   {
-    ASSERT_EQ(sizeof(entries) / sizeof(Entry),
-              handler.seen[index.GetID()].size());
+    ASSERT_EQ(entries.size(), handler.seen[index.GetID()].size());
     size_t i = 0;
     for (auto e : handler.seen[index.GetID()]) {
       auto write_entry = entries[i++];
@@ -278,7 +267,43 @@ TEST(WriteBatchWithIndexTest, TestValueAsSecondaryIndex) {
   }
 }
 
-TEST(WriteBatchWithIndexTest, TestComparatorForCF) {
+TEST_F(WriteBatchWithIndexTest, TestValueAsSecondaryIndex) {
+  Entry entries[] = {
+      {"aaa", "0005", kPutRecord},
+      {"b", "0002", kPutRecord},
+      {"cdd", "0002", kMergeRecord},
+      {"aab", "00001", kPutRecord},
+      {"cc", "00005", kPutRecord},
+      {"cdd", "0002", kPutRecord},
+      {"aab", "0003", kPutRecord},
+      {"cc", "00005", kDeleteRecord},
+  };
+  std::vector<Entry> entries_list(entries, entries + 8);
+
+  WriteBatchWithIndex batch(nullptr, 20);
+
+  TestValueAsSecondaryIndexHelper(entries_list, &batch);
+
+  // Clear batch and re-run test with new values
+  batch.Clear();
+
+  Entry new_entries[] = {
+      {"aaa", "0005", kPutRecord},
+      {"e", "0002", kPutRecord},
+      {"add", "0002", kMergeRecord},
+      {"aab", "00001", kPutRecord},
+      {"zz", "00005", kPutRecord},
+      {"add", "0002", kPutRecord},
+      {"aab", "0003", kPutRecord},
+      {"zz", "00005", kDeleteRecord},
+  };
+
+  entries_list = std::vector<Entry>(new_entries, new_entries + 8);
+
+  TestValueAsSecondaryIndexHelper(entries_list, &batch);
+}
+
+TEST_F(WriteBatchWithIndexTest, TestComparatorForCF) {
   ColumnFamilyHandleImplDummy cf1(6, nullptr);
   ColumnFamilyHandleImplDummy reverse_cf(66, ReverseBytewiseComparator());
   ColumnFamilyHandleImplDummy cf2(88, BytewiseComparator());
@@ -290,7 +315,11 @@ TEST(WriteBatchWithIndexTest, TestComparatorForCF) {
   batch.Put(&cf1, "ccc", "");
   batch.Put(&reverse_cf, "a11", "");
   batch.Put(&cf1, "bbb", "");
-  batch.Put(&reverse_cf, "a33", "");
+
+  Slice key_slices[] = {"a", "3", "3"};
+  Slice value_slice = "";
+  batch.Put(&reverse_cf, SliceParts(key_slices, 3),
+            SliceParts(&value_slice, 1));
   batch.Put(&reverse_cf, "a22", "");
 
   {
@@ -361,7 +390,7 @@ TEST(WriteBatchWithIndexTest, TestComparatorForCF) {
   }
 }
 
-TEST(WriteBatchWithIndexTest, TestOverwriteKey) {
+TEST_F(WriteBatchWithIndexTest, TestOverwriteKey) {
   ColumnFamilyHandleImplDummy cf1(6, nullptr);
   ColumnFamilyHandleImplDummy reverse_cf(66, ReverseBytewiseComparator());
   ColumnFamilyHandleImplDummy cf2(88, BytewiseComparator());
@@ -379,7 +408,8 @@ TEST(WriteBatchWithIndexTest, TestOverwriteKey) {
   batch.Delete(&cf1, "ccc");
   batch.Put(&reverse_cf, "a33", "a33");
   batch.Put(&reverse_cf, "a11", "a11");
-  batch.Delete(&reverse_cf, "a33");
+  Slice slices[] = {"a", "3", "3"};
+  batch.Delete(&reverse_cf, SliceParts(slices, 3));
 
   {
     std::unique_ptr<WBWIIterator> iter(batch.NewIterator(&cf1));
@@ -515,7 +545,7 @@ void AssertItersEqual(Iterator* iter1, Iterator* iter2) {
 }
 }  // namespace
 
-TEST(WriteBatchWithIndexTest, TestRandomIteraratorWithBase) {
+TEST_F(WriteBatchWithIndexTest, TestRandomIteraratorWithBase) {
   std::vector<std::string> source_strings = {"a", "b", "c", "d", "e",
                                              "f", "g", "h", "i", "j"};
   for (int rand_seed = 301; rand_seed < 366; rand_seed++) {
@@ -628,7 +658,7 @@ TEST(WriteBatchWithIndexTest, TestRandomIteraratorWithBase) {
   }
 }
 
-TEST(WriteBatchWithIndexTest, TestIteraratorWithBase) {
+TEST_F(WriteBatchWithIndexTest, TestIteraratorWithBase) {
   ColumnFamilyHandleImplDummy cf1(6, BytewiseComparator());
   ColumnFamilyHandleImplDummy cf2(2, BytewiseComparator());
   WriteBatchWithIndex batch(BytewiseComparator(), 20, true);
@@ -791,7 +821,7 @@ TEST(WriteBatchWithIndexTest, TestIteraratorWithBase) {
   }
 }
 
-TEST(WriteBatchWithIndexTest, TestIteraratorWithBaseReverseCmp) {
+TEST_F(WriteBatchWithIndexTest, TestIteraratorWithBaseReverseCmp) {
   ColumnFamilyHandleImplDummy cf1(6, ReverseBytewiseComparator());
   ColumnFamilyHandleImplDummy cf2(2, ReverseBytewiseComparator());
   WriteBatchWithIndex batch(BytewiseComparator(), 20, true);
@@ -842,8 +872,44 @@ TEST(WriteBatchWithIndexTest, TestIteraratorWithBaseReverseCmp) {
     iter->Seek("a");
     AssertIter(iter.get(), "a", "aa");
   }
+
+  // default column family
+  batch.Put("a", "b");
+  {
+    KVMap map;
+    map["b"] = "";
+    std::unique_ptr<Iterator> iter(batch.NewIteratorWithBase(new KVIter(&map)));
+
+    iter->SeekToFirst();
+    AssertIter(iter.get(), "a", "b");
+    iter->Next();
+    AssertIter(iter.get(), "b", "");
+    iter->Next();
+    ASSERT_OK(iter->status());
+    ASSERT_TRUE(!iter->Valid());
+
+    iter->SeekToLast();
+    AssertIter(iter.get(), "b", "");
+    iter->Prev();
+    AssertIter(iter.get(), "a", "b");
+    iter->Prev();
+    ASSERT_OK(iter->status());
+    ASSERT_TRUE(!iter->Valid());
+
+    iter->Seek("b");
+    AssertIter(iter.get(), "b", "");
+
+    iter->Prev();
+    AssertIter(iter.get(), "a", "b");
+
+    iter->Seek("0");
+    AssertIter(iter.get(), "a", "b");
+  }
 }
 
 }  // namespace
 
-int main(int argc, char** argv) { return rocksdb::test::RunAllTests(); }
+int main(int argc, char** argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
+}

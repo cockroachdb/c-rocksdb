@@ -19,7 +19,7 @@ namespace rocksdb {
 
 class IntComparator : public Comparator {
  public:
-  int Compare(const Slice& a, const Slice& b) const {
+  int Compare(const Slice& a, const Slice& b) const override {
     assert(a.size() == 8);
     assert(b.size() == 8);
     int64_t diff = *reinterpret_cast<const int64_t*>(a.data()) -
@@ -33,16 +33,15 @@ class IntComparator : public Comparator {
     }
   }
 
-  const char* Name() const {
-    return "IntComparator";
-  }
+  const char* Name() const override { return "IntComparator"; }
 
-  void FindShortestSeparator(std::string* start, const Slice& limit) const {}
+  void FindShortestSeparator(std::string* start,
+                             const Slice& limit) const override {}
 
-  void FindShortSuccessor(std::string* key) const {}
+  void FindShortSuccessor(std::string* key) const override {}
 };
 
-struct FileIndexerTest {
+class FileIndexerTest : public testing::Test {
  public:
   FileIndexerTest()
       : kNumLevels(4), files(new std::vector<FileMetaData*>[kNumLevels]) {}
@@ -91,7 +90,7 @@ struct FileIndexerTest {
 };
 
 // Case 0: Empty
-TEST(FileIndexerTest, Empty) {
+TEST_F(FileIndexerTest, Empty) {
   Arena arena;
   indexer = new FileIndexer(&ucmp);
   indexer->UpdateIndex(&arena, 0, files);
@@ -99,7 +98,7 @@ TEST(FileIndexerTest, Empty) {
 }
 
 // Case 1: no overlap, files are on the left of next level files
-TEST(FileIndexerTest, no_overlap_left) {
+TEST_F(FileIndexerTest, no_overlap_left) {
   Arena arena;
   indexer = new FileIndexer(&ucmp);
   // level 1
@@ -139,7 +138,7 @@ TEST(FileIndexerTest, no_overlap_left) {
 }
 
 // Case 2: no overlap, files are on the right of next level files
-TEST(FileIndexerTest, no_overlap_right) {
+TEST_F(FileIndexerTest, no_overlap_right) {
   Arena arena;
   indexer = new FileIndexer(&ucmp);
   // level 1
@@ -181,7 +180,7 @@ TEST(FileIndexerTest, no_overlap_right) {
 }
 
 // Case 3: empty L2
-TEST(FileIndexerTest, empty_L2) {
+TEST_F(FileIndexerTest, empty_L2) {
   Arena arena;
   indexer = new FileIndexer(&ucmp);
   for (uint32_t i = 1; i < kNumLevels; ++i) {
@@ -221,7 +220,7 @@ TEST(FileIndexerTest, empty_L2) {
 }
 
 // Case 4: mixed
-TEST(FileIndexerTest, mixed) {
+TEST_F(FileIndexerTest, mixed) {
   Arena arena;
   indexer = new FileIndexer(&ucmp);
   // level 1
@@ -344,5 +343,6 @@ TEST(FileIndexerTest, mixed) {
 }  // namespace rocksdb
 
 int main(int argc, char** argv) {
-  return rocksdb::test::RunAllTests();
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
 }

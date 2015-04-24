@@ -14,6 +14,7 @@
 #include "util/histogram.h"
 #include "util/stop_watch.h"
 #include "util/testharness.h"
+#include "util/thread_status_util.h"
 #include "util/string_util.h"
 
 
@@ -54,13 +55,13 @@ std::shared_ptr<DB> OpenDb(bool read_only = false) {
     } else {
       s = DB::OpenForReadOnly(options, kDbName, &db);
     }
-    ASSERT_OK(s);
+    EXPECT_OK(s);
     return std::shared_ptr<DB>(db);
 }
 
-class PerfContextTest { };
+class PerfContextTest : public testing::Test {};
 
-TEST(PerfContextTest, SeekIntoDeletion) {
+TEST_F(PerfContextTest, SeekIntoDeletion) {
   DestroyDB(kDbName, Options());
   auto db = OpenDb();
   WriteOptions write_options;
@@ -143,7 +144,7 @@ TEST(PerfContextTest, SeekIntoDeletion) {
   std::cout << "Seek uesr key comparison: \n" << hist_seek.ToString();
 }
 
-TEST(PerfContextTest, StopWatchNanoOverhead) {
+TEST_F(PerfContextTest, StopWatchNanoOverhead) {
   // profile the timer cost by itself!
   const int kTotalIterations = 1000000;
   std::vector<uint64_t> timings(kTotalIterations);
@@ -161,7 +162,7 @@ TEST(PerfContextTest, StopWatchNanoOverhead) {
   std::cout << histogram.ToString();
 }
 
-TEST(PerfContextTest, StopWatchOverhead) {
+TEST_F(PerfContextTest, StopWatchOverhead) {
   // profile the timer cost by itself!
   const int kTotalIterations = 1000000;
   uint64_t elapsed = 0;
@@ -210,6 +211,8 @@ void ProfileQueries(bool enabled_time = false) {
   HistogramImpl hist_write_wal_time;
   HistogramImpl hist_write_memtable_time;
 
+  uint64_t total_db_mutex_nanos = 0;
+
   std::cout << "Inserting " << FLAGS_total_keys << " key/value pairs\n...\n";
 
   std::vector<int> keys;
@@ -225,13 +228,17 @@ void ProfileQueries(bool enabled_time = false) {
   if (FLAGS_random_key) {
     std::random_shuffle(keys.begin(), keys.end());
   }
-
+#ifndef NDEBUG
+  ThreadStatusUtil::TEST_SetStateDelay(ThreadStatus::STATE_MUTEX_WAIT, 1U);
+#endif
+  int num_mutex_waited = 0;
   for (const int i : keys) {
     if (i == kFlushFlag) {
       FlushOptions fo;
       db->Flush(fo);
       continue;
     }
+
     std::string key = "k" + ToString(i);
     std::string value = "v" + ToString(i);
 
@@ -239,11 +246,20 @@ void ProfileQueries(bool enabled_time = false) {
 
     perf_context.Reset();
     db->Put(write_options, key, value);
+    if (++num_mutex_waited > 3) {
+#ifndef NDEBUG
+      ThreadStatusUtil::TEST_SetStateDelay(ThreadStatus::STATE_MUTEX_WAIT, 0U);
+#endif
+    }
     hist_write_pre_post.Add(perf_context.write_pre_and_post_process_time);
     hist_write_wal_time.Add(perf_context.write_wal_time);
     hist_write_memtable_time.Add(perf_context.write_memtable_time);
     hist_put.Add(perf_context.user_key_comparison_count);
+    total_db_mutex_nanos += perf_context.db_mutex_lock_nanos;
   }
+#ifndef NDEBUG
+  ThreadStatusUtil::TEST_SetStateDelay(ThreadStatus::STATE_MUTEX_WAIT, 0U);
+#endif
 
   for (const int i : keys) {
     std::string key = "k" + ToString(i);
@@ -279,7 +295,8 @@ void ProfileQueries(bool enabled_time = false) {
             << " Writing WAL time: \n"
             << hist_write_wal_time.ToString() << "\n"
             << " Writing Mem Table time: \n"
-            << hist_write_memtable_time.ToString() << "\n";
+            << hist_write_memtable_time.ToString() << "\n"
+            << " Total DB mutex nanos: \n" << total_db_mutex_nanos << "\n";
 
   std::cout << "Get(): Time to get snapshot: \n" << hist_get_snapshot.ToString()
             << " Time to get value from memtables: \n"
@@ -316,6 +333,9 @@ void ProfileQueries(bool enabled_time = false) {
     ASSERT_GT(hist_mget_files.Average(), 0);
     ASSERT_GT(hist_mget_post_process.Average(), 0);
     ASSERT_GT(hist_mget_num_memtable_checked.Average(), 0);
+#ifndef NDEBUG
+    ASSERT_GT(total_db_mutex_nanos, 2000U);
+#endif
   }
 
   db.reset();
@@ -405,7 +425,7 @@ void ProfileQueries(bool enabled_time = false) {
   }
 }
 
-TEST(PerfContextTest, KeyComparisonCount) {
+TEST_F(PerfContextTest, KeyComparisonCount) {
   SetPerfLevel(kEnableCount);
   ProfileQueries();
 
@@ -428,7 +448,7 @@ TEST(PerfContextTest, KeyComparisonCount) {
 // memtable. When there are two memtables, even the avg Seek Key comparison
 // starts to become linear to the input size.
 
-TEST(PerfContextTest, SeekKeyComparison) {
+TEST_F(PerfContextTest, SeekKeyComparison) {
   DestroyDB(kDbName, Options());
   auto db = OpenDb();
   WriteOptions write_options;
@@ -497,6 +517,7 @@ TEST(PerfContextTest, SeekKeyComparison) {
 }
 
 int main(int argc, char** argv) {
+  ::testing::InitGoogleTest(&argc, argv);
 
   for (int i = 1; i < argc; i++) {
     int n;
@@ -524,6 +545,5 @@ int main(int argc, char** argv) {
 
   std::cout << kDbName << "\n";
 
-  rocksdb::test::RunAllTests();
-  return 0;
+  return RUN_ALL_TESTS();
 }
