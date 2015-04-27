@@ -139,7 +139,7 @@ class BaseDeltaIterator : public Iterator {
                             : delta_iterator_->Entry().value;
   }
 
-  Status status() const {
+  Status status() const override {
     if (!status_.ok()) {
       return status_;
     }
@@ -317,9 +317,9 @@ struct WriteBatchIndexEntry {
 
 class WriteBatchEntryComparator {
  public:
-  WriteBatchEntryComparator(const Comparator* default_comparator,
+  WriteBatchEntryComparator(const Comparator* _default_comparator,
                             const ReadableWriteBatch* write_batch)
-      : default_comparator_(default_comparator), write_batch_(write_batch) {}
+      : default_comparator_(_default_comparator), write_batch_(write_batch) {}
   // Compare a and b. Return a negative value if a is less than b, 0 if they
   // are equal, and a positive value if a is greater than b
   int operator()(const WriteBatchIndexEntry* entry1,
@@ -332,6 +332,8 @@ class WriteBatchEntryComparator {
                           const Comparator* comparator) {
     cf_comparator_map_[column_family_id] = comparator;
   }
+
+  const Comparator* default_comparator() { return default_comparator_; }
 
  private:
   const Comparator* default_comparator_;
@@ -356,7 +358,7 @@ class WBWIIteratorImpl : public WBWIIterator {
 
   virtual bool Valid() const override { return valid_; }
 
-  virtual void SeekToFirst() {
+  virtual void SeekToFirst() override {
     valid_ = true;
     WriteBatchIndexEntry search_entry(WriteBatchIndexEntry::kFlagMin,
                                       column_family_id_);
@@ -364,7 +366,7 @@ class WBWIIteratorImpl : public WBWIIterator {
     ReadEntry();
   }
 
-  virtual void SeekToLast() {
+  virtual void SeekToLast() override {
     valid_ = true;
     WriteBatchIndexEntry search_entry(WriteBatchIndexEntry::kFlagMin,
                                       column_family_id_ + 1);
@@ -468,6 +470,9 @@ struct WriteBatchWithIndex::Rep {
   // Allocate an index entry pointing to the last entry in the write batch and
   // put it to skip list.
   void AddNewEntry(uint32_t column_family_id);
+
+  // Clear all updates buffered in this batch.
+  void Clear();
 };
 
 bool WriteBatchWithIndex::Rep::UpdateExistingEntry(
@@ -519,6 +524,15 @@ void WriteBatchWithIndex::Rep::AddNewEntry(uint32_t column_family_id) {
     auto* index_entry =
         new (mem) WriteBatchIndexEntry(last_entry_offset, column_family_id);
     skip_list.Insert(index_entry);
+  }
+
+  void WriteBatchWithIndex::Rep::Clear() {
+    write_batch.Clear();
+    arena.~Arena();
+    new (&arena) Arena();
+    skip_list.~WriteBatchEntrySkipList();
+    new (&skip_list) WriteBatchEntrySkipList(comparator, &arena);
+    last_entry_offset = 0;
   }
 
 Status ReadableWriteBatch::GetEntryFromDataOffset(size_t data_offset,
@@ -590,6 +604,16 @@ Iterator* WriteBatchWithIndex::NewIteratorWithBase(
                                GetColumnFamilyUserComparator(column_family));
 }
 
+Iterator* WriteBatchWithIndex::NewIteratorWithBase(Iterator* base_iterator) {
+  if (rep->overwrite_key == false) {
+    assert(false);
+    return nullptr;
+  }
+  // default column family's comparator
+  return new BaseDeltaIterator(base_iterator, NewIterator(),
+                               rep->comparator.default_comparator());
+}
+
 void WriteBatchWithIndex::Put(ColumnFamilyHandle* column_family,
                               const Slice& key, const Slice& value) {
   rep->SetLastEntryOffset();
@@ -632,6 +656,8 @@ void WriteBatchWithIndex::Delete(const Slice& key) {
   rep->write_batch.Delete(key);
   rep->AddOrUpdateIndex(key);
 }
+
+void WriteBatchWithIndex::Clear() { rep->Clear(); }
 
 int WriteBatchEntryComparator::operator()(
     const WriteBatchIndexEntry* entry1,

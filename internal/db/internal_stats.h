@@ -21,6 +21,8 @@ namespace rocksdb {
 class MemTableList;
 class DBImpl;
 
+// IMPORTANT: If you add a new property here, also add it to the list in
+//            include/rocksdb/db.h
 enum DBPropertyType : uint32_t {
   kUnknown,
   kNumFilesAtLevel,  // Number of files at a specific level
@@ -38,9 +40,13 @@ enum DBPropertyType : uint32_t {
   kCurSizeActiveMemTable,  // Return current size of the active memtable
   kCurSizeAllMemTables,    // Return current size of all (active + immutable)
                            // memtables
-  kNumEntriesInMutableMemtable,    // Return number of entries in the mutable
+  kNumEntriesInMutableMemtable,    // Return number of deletes in the mutable
                                    // memtable.
   kNumEntriesInImmutableMemtable,  // Return sum of number of entries in all
+                                   // the immutable mem tables.
+  kNumDeletesInMutableMemtable,    // Return number of entries in the mutable
+                                   // memtable.
+  kNumDeletesInImmutableMemtable,  // Return sum of number of deletes in all
                                    // the immutable mem tables.
   kEstimatedNumKeys,  // Estimated total number of keys in the database.
   kEstimatedUsageByTableReaders,  // Estimated memory by table readers.
@@ -48,6 +54,8 @@ enum DBPropertyType : uint32_t {
                                   // 0 means file deletions enabled
   kNumSnapshots,                  // Number of snapshots in the system
   kOldestSnapshotTime,            // Unix timestamp of the first snapshot
+  kNumLiveVersions,
+  kBaseLevel,  // The level that L0 data is compacted to
 };
 
 extern DBPropertyType GetPropertyType(const Slice& property,
@@ -75,6 +83,7 @@ class InternalStats {
     WRITE_DONE_BY_OTHER,
     WRITE_DONE_BY_SELF,
     WRITE_WITH_WAL,
+    WRITE_STALL_MICROS,
     INTERNAL_DB_STATS_ENUM_MAX,
   };
 
@@ -83,9 +92,7 @@ class InternalStats {
         cf_stats_value_(INTERNAL_CF_STATS_ENUM_MAX),
         cf_stats_count_(INTERNAL_CF_STATS_ENUM_MAX),
         comp_stats_(num_levels),
-        stall_leveln_slowdown_hard_(num_levels),
         stall_leveln_slowdown_count_hard_(num_levels),
-        stall_leveln_slowdown_soft_(num_levels),
         stall_leveln_slowdown_count_soft_(num_levels),
         bg_error_count_(0),
         number_levels_(num_levels),
@@ -100,9 +107,7 @@ class InternalStats {
       cf_stats_count_[i] = 0;
     }
     for (int i = 0; i < num_levels; ++i) {
-      stall_leveln_slowdown_hard_[i] = 0;
       stall_leveln_slowdown_count_hard_[i] = 0;
-      stall_leveln_slowdown_soft_[i] = 0;
       stall_leveln_slowdown_count_soft_[i] = 0;
     }
   }
@@ -206,12 +211,10 @@ class InternalStats {
     comp_stats_[level].bytes_moved += amount;
   }
 
-  void RecordLevelNSlowdown(int level, uint64_t micros, bool soft) {
+  void RecordLevelNSlowdown(int level, bool soft) {
     if (soft) {
-      stall_leveln_slowdown_soft_[level] += micros;
       ++stall_leveln_slowdown_count_soft_[level];
     } else {
-      stall_leveln_slowdown_hard_[level] += micros;
       ++stall_leveln_slowdown_count_hard_[level];
     }
   }
@@ -250,9 +253,7 @@ class InternalStats {
   // Per-ColumnFamily/level compaction stats
   std::vector<CompactionStats> comp_stats_;
   // These count the number of microseconds for which MakeRoomForWrite stalls.
-  std::vector<uint64_t> stall_leveln_slowdown_hard_;
   std::vector<uint64_t> stall_leveln_slowdown_count_hard_;
-  std::vector<uint64_t> stall_leveln_slowdown_soft_;
   std::vector<uint64_t> stall_leveln_slowdown_count_soft_;
 
   // Used to compute per-interval statistics
@@ -260,13 +261,11 @@ class InternalStats {
     // ColumnFamily-level stats
     CompactionStats comp_stats;
     uint64_t ingest_bytes;            // Bytes written to L0
-    uint64_t stall_us;                // Stall time in micro-seconds
     uint64_t stall_count;             // Stall count
 
     CFStatsSnapshot()
         : comp_stats(0),
           ingest_bytes(0),
-          stall_us(0),
           stall_count(0) {}
   } cf_stats_snapshot_;
 
@@ -285,6 +284,8 @@ class InternalStats {
     // to multiple keys. num_keys_written is total number of keys updated by all
     // those writes.
     uint64_t num_keys_written;
+    // Total time writes delayed by stalls.
+    uint64_t write_stall_micros;
     double seconds_up;
 
     DBStatsSnapshot()
@@ -295,6 +296,7 @@ class InternalStats {
           write_other(0),
           write_self(0),
           num_keys_written(0),
+          write_stall_micros(0),
           seconds_up(0) {}
   } db_stats_snapshot_;
 
@@ -332,6 +334,7 @@ class InternalStats {
     WRITE_DONE_BY_OTHER,
     WRITE_DONE_BY_SELF,
     WRITE_WITH_WAL,
+    WRITE_STALL_MICROS,
     INTERNAL_DB_STATS_ENUM_MAX,
   };
 
@@ -363,7 +366,7 @@ class InternalStats {
 
   void IncBytesMoved(int level, uint64_t amount) {}
 
-  void RecordLevelNSlowdown(int level, uint64_t micros, bool soft) {}
+  void RecordLevelNSlowdown(int level, bool soft) {}
 
   void AddCFStats(InternalCFStatsType type, uint64_t value) {}
 

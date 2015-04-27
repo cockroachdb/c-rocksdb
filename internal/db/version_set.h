@@ -36,6 +36,8 @@
 #include "db/log_reader.h"
 #include "db/file_indexer.h"
 #include "db/write_controller.h"
+#include "rocksdb/env.h"
+#include "util/instrumented_mutex.h"
 
 namespace rocksdb {
 
@@ -62,8 +64,7 @@ class MergeIteratorBuilder;
 // REQUIRES: "file_level.files" contains a sorted list of
 // non-overlapping files.
 extern int FindFile(const InternalKeyComparator& icmp,
-                    const LevelFilesBrief& file_level,
-                    const Slice& key);
+                    const LevelFilesBrief& file_level, const Slice& key);
 
 // Returns true iff some file in "files" overlaps the user key range
 // [*smallest,*largest].
@@ -71,19 +72,18 @@ extern int FindFile(const InternalKeyComparator& icmp,
 // largest==nullptr represents a key largest than all keys in the DB.
 // REQUIRES: If disjoint_sorted_files, file_level.files[]
 // contains disjoint ranges in sorted order.
-extern bool SomeFileOverlapsRange(
-    const InternalKeyComparator& icmp,
-    bool disjoint_sorted_files,
-    const LevelFilesBrief& file_level,
-    const Slice* smallest_user_key,
-    const Slice* largest_user_key);
+extern bool SomeFileOverlapsRange(const InternalKeyComparator& icmp,
+                                  bool disjoint_sorted_files,
+                                  const LevelFilesBrief& file_level,
+                                  const Slice* smallest_user_key,
+                                  const Slice* largest_user_key);
 
 // Generate LevelFilesBrief from vector<FdWithKeyRange*>
 // Would copy smallest_key and largest_key data to sequential memory
 // arena: Arena used to allocate the memory
 extern void DoGenerateLevelFilesBrief(LevelFilesBrief* file_level,
-        const std::vector<FileMetaData*>& files,
-        Arena* arena);
+                                      const std::vector<FileMetaData*>& files,
+                                      Arena* arena);
 
 class VersionStorageInfo {
  public:
@@ -97,7 +97,7 @@ class VersionStorageInfo {
 
   void AddFile(int level, FileMetaData* f);
 
-  void SetFinalized() { finalized_ = true; }
+  void SetFinalized();
 
   // Update num_non_empty_levels_.
   void UpdateNumNonEmptyLevels();
@@ -113,13 +113,11 @@ class VersionStorageInfo {
 
   // Updates internal structures that keep track of compaction scores
   // We use compaction scores to figure out which compaction to do next
-  // REQUIRES: If Version is not yet saved to current_, it can be called without
-  // a lock. Once a version is saved to current_, call only with mutex held
+  // REQUIRES: db_mutex held!!
   // TODO find a better way to pass compaction_options_fifo.
   void ComputeCompactionScore(
       const MutableCFOptions& mutable_cf_options,
-      const CompactionOptionsFIFO& compaction_options_fifo,
-      std::vector<uint64_t>& size_being_compacted);
+      const CompactionOptionsFIFO& compaction_options_fifo);
 
   // Generate level_files_brief_ from files_
   void GenerateLevelFilesBrief();
@@ -149,15 +147,17 @@ class VersionStorageInfo {
       int* file_index = nullptr);  // return index of overlap file
 
   void GetOverlappingInputsBinarySearch(
-      int level, const Slice& begin,  // nullptr means before all keys
-      const Slice& end,               // nullptr means after all keys
+      int level,
+      const Slice& begin,  // nullptr means before all keys
+      const Slice& end,    // nullptr means after all keys
       std::vector<FileMetaData*>* inputs,
       int hint_index,    // index of overlap file
       int* file_index);  // return index of overlap file
 
   void ExtendOverlappingInputs(
-      int level, const Slice& begin,  // nullptr means before all keys
-      const Slice& end,               // nullptr means after all keys
+      int level,
+      const Slice& begin,  // nullptr means before all keys
+      const Slice& end,    // nullptr means after all keys
       std::vector<FileMetaData*>* inputs,
       unsigned int index);  // start extending from this index
 
@@ -213,6 +213,8 @@ class VersionStorageInfo {
     assert(finalized_);
     return files_by_size_[level];
   }
+
+  int base_level() const { return base_level_; }
 
   // REQUIRES: lock is held
   // Set the index that is used to offset into files_by_size_ to find
@@ -282,12 +284,22 @@ class VersionStorageInfo {
     return internal_comparator_;
   }
 
+  // Returns maximum total bytes of data on a given level.
+  uint64_t MaxBytesForLevel(int level) const;
+
+  // Must be called after any change to MutableCFOptions.
+  void CalculateBaseBytes(const ImmutableCFOptions& ioptions,
+                          const MutableCFOptions& options);
+
  private:
   const InternalKeyComparator* internal_comparator_;
   const Comparator* user_comparator_;
   int num_levels_;            // Number of levels
   int num_non_empty_levels_;  // Number of levels. Any level larger than it
                               // is guaranteed to be empty.
+  // Per-level max bytes
+  std::vector<uint64_t> level_max_bytes_;
+
   // A short brief metadata of files per level
   autovector<rocksdb::LevelFilesBrief> level_files_brief_;
   FileIndexer file_indexer_;
@@ -298,6 +310,10 @@ class VersionStorageInfo {
   // List of files per level, files in each level are arranged
   // in increasing order of keys
   std::vector<FileMetaData*>* files_;
+
+  // Level that L0 data should be compacted to. All levels < base_level_ should
+  // be empty.
+  int base_level_;
 
   // A list for the same set of files that are stored in files_,
   // but files in each level are now sorted based on file
@@ -365,10 +381,9 @@ class Version {
            Status* status, MergeContext* merge_context,
            bool* value_found = nullptr);
 
-  // Update scores, pre-calculated variables. It needs to be called before
-  // applying the version to the version set.
-  void PrepareApply(const MutableCFOptions& mutable_cf_options,
-                    std::vector<uint64_t>& size_being_compacted);
+  // Loads some stats information from files. Call without mutex held. It needs
+  // to be called before applying the version to the version set.
+  void PrepareApply(const MutableCFOptions& mutable_cf_options);
 
   // Reference count management (so Versions do not disappear out from
   // under live iterators)
@@ -409,7 +424,6 @@ class Version {
 
   ColumnFamilyData* cfd() const { return cfd_; }
 
-
   // Return the next Version in the linked list. Used for debug only
   Version* TEST_Next() const {
     return next_;
@@ -422,6 +436,7 @@ class Version {
   void GetColumnFamilyMetaData(ColumnFamilyMetaData* cf_meta);
 
  private:
+  Env* env_;
   friend class VersionSet;
 
   const InternalKeyComparator* internal_comparator() const {
@@ -488,7 +503,7 @@ class VersionSet {
   Status LogAndApply(
       ColumnFamilyData* column_family_data,
       const MutableCFOptions& mutable_cf_options, VersionEdit* edit,
-      port::Mutex* mu, Directory* db_directory = nullptr,
+      InstrumentedMutex* mu, Directory* db_directory = nullptr,
       bool new_descriptor_log = false,
       const ColumnFamilyOptions* column_family_options = nullptr);
 
@@ -592,10 +607,13 @@ class VersionSet {
 
   void GetLiveFilesMetaData(std::vector<LiveFileMetaData> *metadata);
 
-  void GetObsoleteFiles(std::vector<FileMetaData*>* files);
+  void GetObsoleteFiles(std::vector<FileMetaData*>* files,
+                        uint64_t min_pending_output);
 
   ColumnFamilySet* GetColumnFamilySet() { return column_family_set_.get(); }
   const EnvOptions& env_options() { return env_options_; }
+
+  static uint64_t GetNumLiveVersions(Version* dummy_versions);
 
  private:
   struct ManifestWriter;
@@ -605,7 +623,7 @@ class VersionSet {
 
   struct LogReporter : public log::Reader::Reporter {
     Status* status;
-    virtual void Corruption(size_t bytes, const Status& s) {
+    virtual void Corruption(size_t bytes, const Status& s) override {
       if (this->status->ok()) *this->status = s;
     }
   };
@@ -659,7 +677,7 @@ class VersionSet {
 
   void LogAndApplyCFHelper(VersionEdit* edit);
   void LogAndApplyHelper(ColumnFamilyData* cfd, VersionBuilder* b, Version* v,
-                         VersionEdit* edit, port::Mutex* mu);
+                         VersionEdit* edit, InstrumentedMutex* mu);
 };
 
 }  // namespace rocksdb

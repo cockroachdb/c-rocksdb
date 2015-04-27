@@ -91,10 +91,6 @@ class CompactionPicker {
   // Free up the files that participated in a compaction
   void ReleaseCompactionFiles(Compaction* c, Status status);
 
-  // Return the total amount of data that is undergoing
-  // compactions per level
-  void SizeBeingCompacted(std::vector<uint64_t>& sizes);
-
   // Returns true if any one of the specified files are being compacted
   bool FilesInCompaction(const std::vector<FileMetaData*>& files);
 
@@ -143,10 +139,9 @@ class CompactionPicker {
                               VersionStorageInfo* vstorage, Compaction* c);
 
   // Returns true if any one of the parent files are being compacted
-  bool ParentRangeInCompaction(VersionStorageInfo* vstorage,
-                               const InternalKey* smallest,
-                               const InternalKey* largest, int level,
-                               int* index);
+  bool RangeInCompaction(VersionStorageInfo* vstorage,
+                         const InternalKey* smallest,
+                         const InternalKey* largest, int level, int* index);
 
   void SetupOtherInputs(const std::string& cf_name,
                         const MutableCFOptions& mutable_cf_options,
@@ -163,8 +158,9 @@ class CompactionPicker {
       const int output_level) const;
 #endif  // ROCKSDB_LITE
 
-  // record all the ongoing compactions for all levels
-  std::vector<std::set<Compaction*>> compactions_in_progress_;
+  // Keeps track of all compactions that are running on Level0.
+  // It is protected by DB mutex
+  std::set<Compaction*> level0_compactions_in_progress_;
 
   const InternalKeyComparator* const icmp_;
 };
@@ -187,6 +183,11 @@ class LevelCompactionPicker : public CompactionPicker {
 
   virtual bool NeedsCompaction(const VersionStorageInfo* vstorage) const
       override;
+
+  // Pick a path ID to place a newly generated file, with its level
+  static uint32_t GetPathId(const ImmutableCFOptions& ioptions,
+                            const MutableCFOptions& mutable_cf_options,
+                            int level);
 
  private:
   // For the specfied level, pick a compaction.
@@ -297,7 +298,7 @@ class NullCompactionPicker : public CompactionPicker {
 
   // Given the current number of levels, returns the highest allowed level
   // for compaction input.
-  virtual int MaxInputLevel(int current_num_levels) const {
+  virtual int MaxInputLevel(int current_num_levels) const override {
     return current_num_levels - 2;
   }
 
@@ -308,8 +309,5 @@ class NullCompactionPicker : public CompactionPicker {
   }
 };
 #endif  // !ROCKSDB_LITE
-
-// Utility function
-extern uint64_t TotalCompensatedFileSize(const std::vector<FileMetaData*>& files);
 
 }  // namespace rocksdb

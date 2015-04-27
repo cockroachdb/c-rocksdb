@@ -1726,6 +1726,7 @@ class StressTest {
         break;
       case rocksdb::kLZ4Compression:
         compression = "lz4";
+        break;
       case rocksdb::kLZ4HCCompression:
         compression = "lz4hc";
         break;
@@ -1757,6 +1758,7 @@ class StressTest {
     block_based_options.block_cache = cache_;
     block_based_options.block_cache_compressed = compressed_cache_;
     block_based_options.block_size = FLAGS_block_size;
+    block_based_options.format_version = 2;
     block_based_options.filter_policy = filter_policy_;
     options_.table_factory.reset(
         NewBlockBasedTableFactory(block_based_options));

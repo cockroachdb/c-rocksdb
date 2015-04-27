@@ -17,6 +17,7 @@
 #include "db/skiplist.h"
 #include "db/version_edit.h"
 #include "rocksdb/db.h"
+#include "rocksdb/env.h"
 #include "rocksdb/memtablerep.h"
 #include "rocksdb/immutable_options.h"
 #include "db/memtable_allocator.h"
@@ -59,7 +60,7 @@ class MemTable {
     const InternalKeyComparator comparator;
     explicit KeyComparator(const InternalKeyComparator& c) : comparator(c) { }
     virtual int operator()(const char* prefix_len_key1,
-                           const char* prefix_len_key2) const;
+                           const char* prefix_len_key2) const override;
     virtual int operator()(const char* prefix_len_key,
                            const Slice& key) const override;
   };
@@ -164,7 +165,9 @@ class MemTable {
   size_t CountSuccessiveMergeEntries(const LookupKey& key);
 
   // Get total number of entries in the mem table.
-  uint64_t GetNumEntries() const { return num_entries_; }
+  uint64_t num_entries() const { return num_entries_; }
+
+  uint64_t num_deletes() const { return num_deletes_; }
 
   // Returns the edits area that is needed for flushing the memtable
   VersionEdit* GetEdits() { return &edit_; }
@@ -196,7 +199,10 @@ class MemTable {
   }
 
   // return true if the current MemTableRep supports snapshots.
-  bool IsSnapshotSupported() const { return table_->IsSnapshotSupported(); }
+  // inplace update prevents snapshots,
+  bool IsSnapshotSupported() const {
+    return table_->IsSnapshotSupported() && !moptions_.inplace_update_support;
+  }
 
   // Get the lock associated for the key
   port::RWMutex* GetLock(const Slice& key);
@@ -224,6 +230,7 @@ class MemTable {
   unique_ptr<MemTableRep> table_;
 
   uint64_t num_entries_;
+  uint64_t num_deletes_;
 
   // These are used to manage memtable flushes to storage
   bool flush_in_progress_; // started the flush
@@ -255,6 +262,7 @@ class MemTable {
 
   // a flag indicating if flush has been scheduled
   bool flush_scheduled_;
+  Env* env_;
 };
 
 extern const char* EncodeKey(std::string* scratch, const Slice& target);

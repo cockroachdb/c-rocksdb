@@ -19,9 +19,11 @@ namespace rocksdb {
 
 class MemFile {
  public:
-  explicit MemFile(const std::string& fn)
+  explicit MemFile(const std::string& fn, bool _is_lock_file = false)
       : fn_(fn),
         refs_(0),
+        is_lock_file_(_is_lock_file),
+        locked_(false),
         size_(0),
         modified_time_(Now()),
         rnd_(static_cast<uint32_t>(
@@ -31,6 +33,25 @@ class MemFile {
   void Ref() {
     MutexLock lock(&mutex_);
     ++refs_;
+  }
+
+  bool is_lock_file() const { return is_lock_file_; }
+
+  bool Lock() {
+    assert(is_lock_file_);
+    MutexLock lock(&mutex_);
+    if (locked_) {
+      return false;
+    } else {
+      locked_ = true;
+      return true;
+    }
+  }
+
+  void Unlock() {
+    assert(is_lock_file_);
+    MutexLock lock(&mutex_);
+    locked_ = false;
   }
 
   void Unref() {
@@ -132,6 +153,8 @@ class MemFile {
   const std::string fn_;
   mutable port::Mutex mutex_;
   int refs_;
+  bool is_lock_file_;
+  bool locked_;
 
   // Data written into this file, all bytes before fsynced_bytes are
   // persistent.
@@ -145,17 +168,17 @@ class MemFile {
 
 namespace {
 
-class SequentialFileImpl : public SequentialFile {
+class MockSequentialFile : public SequentialFile {
  public:
-  explicit SequentialFileImpl(MemFile* file) : file_(file), pos_(0) {
+  explicit MockSequentialFile(MemFile* file) : file_(file), pos_(0) {
     file_->Ref();
   }
 
-  ~SequentialFileImpl() {
+  ~MockSequentialFile() {
     file_->Unref();
   }
 
-  virtual Status Read(size_t n, Slice* result, char* scratch) {
+  virtual Status Read(size_t n, Slice* result, char* scratch) override {
     Status s = file_->Read(pos_, n, result, scratch);
     if (s.ok()) {
       pos_ += result->size();
@@ -163,7 +186,7 @@ class SequentialFileImpl : public SequentialFile {
     return s;
   }
 
-  virtual Status Skip(uint64_t n) {
+  virtual Status Skip(uint64_t n) override {
     if (pos_ > file_->Size()) {
       return Status::IOError("pos_ > file_->Size()");
     }
@@ -180,18 +203,18 @@ class SequentialFileImpl : public SequentialFile {
   size_t pos_;
 };
 
-class RandomAccessFileImpl : public RandomAccessFile {
+class MockRandomAccessFile : public RandomAccessFile {
  public:
-  explicit RandomAccessFileImpl(MemFile* file) : file_(file) {
+  explicit MockRandomAccessFile(MemFile* file) : file_(file) {
     file_->Ref();
   }
 
-  ~RandomAccessFileImpl() {
+  ~MockRandomAccessFile() {
     file_->Unref();
   }
 
   virtual Status Read(uint64_t offset, size_t n, Slice* result,
-                      char* scratch) const {
+                      char* scratch) const override {
     return file_->Read(offset, n, result, scratch);
   }
 
@@ -199,19 +222,19 @@ class RandomAccessFileImpl : public RandomAccessFile {
   MemFile* file_;
 };
 
-class WritableFileImpl : public WritableFile {
+class MockWritableFile : public WritableFile {
  public:
-  WritableFileImpl(MemFile* file, RateLimiter* rate_limiter)
+  MockWritableFile(MemFile* file, RateLimiter* rate_limiter)
     : file_(file),
       rate_limiter_(rate_limiter) {
     file_->Ref();
   }
 
-  ~WritableFileImpl() {
+  ~MockWritableFile() {
     file_->Unref();
   }
 
-  virtual Status Append(const Slice& data) {
+  virtual Status Append(const Slice& data) override {
     uint64_t bytes_written = 0;
     while (bytes_written < data.size()) {
       auto bytes = RequestToken(data.size() - bytes_written);
@@ -224,21 +247,13 @@ class WritableFileImpl : public WritableFile {
     return Status::OK();
   }
 
-  virtual Status Close() {
-    return file_->Fsync();
-  }
+  virtual Status Close() override { return file_->Fsync(); }
 
-  virtual Status Flush() {
-    return Status::OK();
-  }
+  virtual Status Flush() override { return Status::OK(); }
 
-  virtual Status Sync() {
-    return file_->Fsync();
-  }
+  virtual Status Sync() override { return file_->Fsync(); }
 
-  virtual uint64_t GetFileSize() {
-    return file_->Size();
-  }
+  virtual uint64_t GetFileSize() override { return file_->Size(); }
 
  private:
   inline size_t RequestToken(size_t bytes) {
@@ -256,7 +271,7 @@ class WritableFileImpl : public WritableFile {
 
 class MockEnvDirectory : public Directory {
  public:
-  virtual Status Fsync() { return Status::OK(); }
+  virtual Status Fsync() override { return Status::OK(); }
 };
 
 class MockEnvFileLock : public FileLock {
@@ -293,13 +308,15 @@ class TestMemLogger : public Logger {
   virtual ~TestMemLogger() {
   }
 
-  virtual void Flush() {
+  virtual void Flush() override {
     if (flush_pending_) {
       flush_pending_ = false;
     }
     last_flush_micros_ = env_->NowMicros();
   }
-  virtual void Logv(const char* format, va_list ap) {
+
+  using Logger::Logv;
+  virtual void Logv(const char* format, va_list ap) override {
     // We try twice: the first time with a fixed-size stack allocated buffer,
     // and the second time with a much larger dynamically allocated buffer.
     char buffer[500];
@@ -371,9 +388,7 @@ class TestMemLogger : public Logger {
       break;
     }
   }
-  size_t GetLogFileSize() const {
-    return log_size_;
-  }
+  size_t GetLogFileSize() const override { return log_size_; }
 };
 
 }  // Anonymous namespace
@@ -398,7 +413,10 @@ Status MockEnv::NewSequentialFile(const std::string& fname,
     return Status::IOError(fn, "File not found");
   }
   auto* f = file_map_[fn];
-  result->reset(new SequentialFileImpl(f));
+  if (f->is_lock_file()) {
+    return Status::InvalidArgument(fn, "Cannot open a lock file.");
+  }
+  result->reset(new MockSequentialFile(f));
   return Status::OK();
 }
 
@@ -412,7 +430,10 @@ Status MockEnv::NewRandomAccessFile(const std::string& fname,
     return Status::IOError(fn, "File not found");
   }
   auto* f = file_map_[fn];
-  result->reset(new RandomAccessFileImpl(f));
+  if (f->is_lock_file()) {
+    return Status::InvalidArgument(fn, "Cannot open a lock file.");
+  }
+  result->reset(new MockRandomAccessFile(f));
   return Status::OK();
 }
 
@@ -424,11 +445,11 @@ Status MockEnv::NewWritableFile(const std::string& fname,
   if (file_map_.find(fn) != file_map_.end()) {
     DeleteFileInternal(fn);
   }
-  MemFile* file = new MemFile(fn);
+  MemFile* file = new MemFile(fn, false);
   file->Ref();
   file_map_[fn] = file;
 
-  result->reset(new WritableFileImpl(file, env_options.rate_limiter));
+  result->reset(new MockWritableFile(file, env_options.rate_limiter));
   return Status::OK();
 }
 
@@ -490,12 +511,11 @@ Status MockEnv::GetChildren(const std::string& dir,
 
 void MockEnv::DeleteFileInternal(const std::string& fname) {
   assert(fname == NormalizePath(fname));
-  if (file_map_.find(fname) == file_map_.end()) {
-    return;
+  const auto& pair = file_map_.find(fname);
+  if (pair != file_map_.end()) {
+    pair->second->Unref();
+    file_map_.erase(fname);
   }
-
-  file_map_[fname]->Unref();
-  file_map_.erase(fname);
 }
 
 Status MockEnv::DeleteFile(const std::string& fname) {
@@ -579,13 +599,13 @@ Status MockEnv::NewLogger(const std::string& fname,
   auto iter = file_map_.find(fn);
   MemFile* file = nullptr;
   if (iter == file_map_.end()) {
-    file = new MemFile(fn);
+    file = new MemFile(fn, false);
     file->Ref();
     file_map_[fn] = file;
   } else {
     file = iter->second;
   }
-  std::unique_ptr<WritableFile> f(new WritableFileImpl(file, nullptr));
+  std::unique_ptr<WritableFile> f(new MockWritableFile(file, nullptr));
   result->reset(new TestMemLogger(std::move(f), this));
   return Status::OK();
 }
@@ -595,9 +615,18 @@ Status MockEnv::LockFile(const std::string& fname, FileLock** flock) {
   {
     MutexLock lock(&mutex_);
     if (file_map_.find(fn) != file_map_.end()) {
-      return Status::IOError(fn, "Lock file exists");
+      if (!file_map_[fn]->is_lock_file()) {
+        return Status::InvalidArgument(fname, "Not a lock file.");
+      }
+      if (!file_map_[fn]->Lock()) {
+        return Status::IOError(fn, "Lock is already held.");
+      }
+    } else {
+      auto* file = new MemFile(fn, true);
+      file->Ref();
+      file->Lock();
+      file_map_[fn] = file;
     }
-    file_map_[fn] = nullptr;
   }
   *flock = new MockEnvFileLock(fn);
   return Status::OK();
@@ -607,9 +636,11 @@ Status MockEnv::UnlockFile(FileLock* flock) {
   std::string fn = dynamic_cast<MockEnvFileLock*>(flock)->FileName();
   {
     MutexLock lock(&mutex_);
-    auto iter = file_map_.find(fn);
-    if (iter != file_map_.end()) {
-      file_map_.erase(fn);
+    if (file_map_.find(fn) != file_map_.end()) {
+      if (!file_map_[fn]->is_lock_file()) {
+        return Status::InvalidArgument(fn, "Not a lock file.");
+      }
+      file_map_[fn]->Unlock();
     }
   }
   delete flock;

@@ -21,30 +21,30 @@ class VectorIterator : public Iterator {
     std::sort(keys_.begin(), keys_.end());
   }
 
-  virtual bool Valid() const { return current_ < keys_.size(); }
+  virtual bool Valid() const override { return current_ < keys_.size(); }
 
-  virtual void SeekToFirst() { current_ = 0; }
-  virtual void SeekToLast() { current_ = keys_.size() - 1; }
+  virtual void SeekToFirst() override { current_ = 0; }
+  virtual void SeekToLast() override { current_ = keys_.size() - 1; }
 
-  virtual void Seek(const Slice& target) {
+  virtual void Seek(const Slice& target) override {
     current_ = std::lower_bound(keys_.begin(), keys_.end(), target.ToString()) -
                keys_.begin();
   }
 
-  virtual void Next() { current_++; }
-  virtual void Prev() { current_--; }
+  virtual void Next() override { current_++; }
+  virtual void Prev() override { current_--; }
 
-  virtual Slice key() const { return Slice(keys_[current_]); }
-  virtual Slice value() const { return Slice(); }
+  virtual Slice key() const override { return Slice(keys_[current_]); }
+  virtual Slice value() const override { return Slice(); }
 
-  virtual Status status() const { return Status::OK(); }
+  virtual Status status() const override { return Status::OK(); }
 
  private:
   std::vector<std::string> keys_;
   size_t current_;
 };
 
-class MergerTest {
+class MergerTest : public testing::Test {
  public:
   MergerTest()
       : rnd_(3), merging_iterator_(nullptr), single_iterator_(nullptr) {}
@@ -139,7 +139,7 @@ class MergerTest {
   std::vector<std::string> all_keys_;
 };
 
-TEST(MergerTest, SeekToRandomNextTest) {
+TEST_F(MergerTest, SeekToRandomNextTest) {
   Generate(1000, 50, 50);
   for (int i = 0; i < 10; ++i) {
     SeekToRandom();
@@ -148,7 +148,7 @@ TEST(MergerTest, SeekToRandomNextTest) {
   }
 }
 
-TEST(MergerTest, SeekToRandomNextSmallStringsTest) {
+TEST_F(MergerTest, SeekToRandomNextSmallStringsTest) {
   Generate(1000, 50, 2);
   for (int i = 0; i < 10; ++i) {
     SeekToRandom();
@@ -157,7 +157,7 @@ TEST(MergerTest, SeekToRandomNextSmallStringsTest) {
   }
 }
 
-TEST(MergerTest, SeekToRandomPrevTest) {
+TEST_F(MergerTest, SeekToRandomPrevTest) {
   Generate(1000, 50, 50);
   for (int i = 0; i < 10; ++i) {
     SeekToRandom();
@@ -166,7 +166,7 @@ TEST(MergerTest, SeekToRandomPrevTest) {
   }
 }
 
-TEST(MergerTest, SeekToRandomRandomTest) {
+TEST_F(MergerTest, SeekToRandomRandomTest) {
   Generate(200, 50, 50);
   for (int i = 0; i < 3; ++i) {
     SeekToRandom();
@@ -175,7 +175,7 @@ TEST(MergerTest, SeekToRandomRandomTest) {
   }
 }
 
-TEST(MergerTest, SeekToFirstTest) {
+TEST_F(MergerTest, SeekToFirstTest) {
   Generate(1000, 50, 50);
   for (int i = 0; i < 10; ++i) {
     SeekToFirst();
@@ -184,7 +184,7 @@ TEST(MergerTest, SeekToFirstTest) {
   }
 }
 
-TEST(MergerTest, SeekToLastTest) {
+TEST_F(MergerTest, SeekToLastTest) {
   Generate(1000, 50, 50);
   for (int i = 0; i < 10; ++i) {
     SeekToLast();
@@ -195,4 +195,7 @@ TEST(MergerTest, SeekToLastTest) {
 
 }  // namespace rocksdb
 
-int main(int argc, char** argv) { return rocksdb::test::RunAllTests(); }
+int main(int argc, char** argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
+}

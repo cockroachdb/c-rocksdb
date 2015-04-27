@@ -21,18 +21,18 @@ namespace rocksdb {
 // For testing: emit an array with one hash value per key
 class TestHashFilter : public FilterPolicy {
  public:
-  virtual const char* Name() const {
-    return "TestHashFilter";
-  }
+  virtual const char* Name() const override { return "TestHashFilter"; }
 
-  virtual void CreateFilter(const Slice* keys, int n, std::string* dst) const {
+  virtual void CreateFilter(const Slice* keys, int n,
+                            std::string* dst) const override {
     for (int i = 0; i < n; i++) {
       uint32_t h = Hash(keys[i].data(), keys[i].size(), 1);
       PutFixed32(dst, h);
     }
   }
 
-  virtual bool KeyMayMatch(const Slice& key, const Slice& filter) const {
+  virtual bool KeyMayMatch(const Slice& key,
+                           const Slice& filter) const override {
     uint32_t h = Hash(key.data(), key.size(), 1);
     for (unsigned int i = 0; i + 4 <= filter.size(); i += 4) {
       if (h == DecodeFixed32(filter.data() + i)) {
@@ -43,7 +43,7 @@ class TestHashFilter : public FilterPolicy {
   }
 };
 
-class FilterBlockTest {
+class FilterBlockTest : public testing::Test {
  public:
   TestHashFilter policy_;
   BlockBasedTableOptions table_options_;
@@ -53,16 +53,17 @@ class FilterBlockTest {
   }
 };
 
-TEST(FilterBlockTest, EmptyBuilder) {
+TEST_F(FilterBlockTest, EmptyBuilder) {
   BlockBasedFilterBlockBuilder builder(nullptr, table_options_);
   BlockContents block(builder.Finish(), false, kNoCompression);
   ASSERT_EQ("\\x00\\x00\\x00\\x00\\x0b", EscapeString(block.data));
-  BlockBasedFilterBlockReader reader(nullptr, table_options_, std::move(block));
+  BlockBasedFilterBlockReader reader(nullptr, table_options_, true,
+                                     std::move(block));
   ASSERT_TRUE(reader.KeyMayMatch("foo", 0));
   ASSERT_TRUE(reader.KeyMayMatch("foo", 100000));
 }
 
-TEST(FilterBlockTest, SingleChunk) {
+TEST_F(FilterBlockTest, SingleChunk) {
   BlockBasedFilterBlockBuilder builder(nullptr, table_options_);
   builder.StartBlock(100);
   builder.Add("foo");
@@ -73,7 +74,8 @@ TEST(FilterBlockTest, SingleChunk) {
   builder.StartBlock(300);
   builder.Add("hello");
   BlockContents block(builder.Finish(), false, kNoCompression);
-  BlockBasedFilterBlockReader reader(nullptr, table_options_, std::move(block));
+  BlockBasedFilterBlockReader reader(nullptr, table_options_, true,
+                                     std::move(block));
   ASSERT_TRUE(reader.KeyMayMatch("foo", 100));
   ASSERT_TRUE(reader.KeyMayMatch("bar", 100));
   ASSERT_TRUE(reader.KeyMayMatch("box", 100));
@@ -83,7 +85,7 @@ TEST(FilterBlockTest, SingleChunk) {
   ASSERT_TRUE(!reader.KeyMayMatch("other", 100));
 }
 
-TEST(FilterBlockTest, MultiChunk) {
+TEST_F(FilterBlockTest, MultiChunk) {
   BlockBasedFilterBlockBuilder builder(nullptr, table_options_);
 
   // First filter
@@ -104,7 +106,8 @@ TEST(FilterBlockTest, MultiChunk) {
   builder.Add("hello");
 
   BlockContents block(builder.Finish(), false, kNoCompression);
-  BlockBasedFilterBlockReader reader(nullptr, table_options_, std::move(block));
+  BlockBasedFilterBlockReader reader(nullptr, table_options_, true,
+                                     std::move(block));
 
   // Check first filter
   ASSERT_TRUE(reader.KeyMayMatch("foo", 0));
@@ -133,7 +136,7 @@ TEST(FilterBlockTest, MultiChunk) {
 
 // Test for block based filter block
 // use new interface in FilterPolicy to create filter builder/reader
-class BlockBasedFilterBlockTest {
+class BlockBasedFilterBlockTest : public testing::Test {
  public:
   BlockBasedTableOptions table_options_;
 
@@ -144,13 +147,13 @@ class BlockBasedFilterBlockTest {
   ~BlockBasedFilterBlockTest() {}
 };
 
-TEST(BlockBasedFilterBlockTest, BlockBasedEmptyBuilder) {
+TEST_F(BlockBasedFilterBlockTest, BlockBasedEmptyBuilder) {
   FilterBlockBuilder* builder = new BlockBasedFilterBlockBuilder(
       nullptr, table_options_);
   BlockContents block(builder->Finish(), false, kNoCompression);
   ASSERT_EQ("\\x00\\x00\\x00\\x00\\x0b", EscapeString(block.data));
   FilterBlockReader* reader = new BlockBasedFilterBlockReader(
-      nullptr, table_options_, std::move(block));
+      nullptr, table_options_, true, std::move(block));
   ASSERT_TRUE(reader->KeyMayMatch("foo", 0));
   ASSERT_TRUE(reader->KeyMayMatch("foo", 100000));
 
@@ -158,7 +161,7 @@ TEST(BlockBasedFilterBlockTest, BlockBasedEmptyBuilder) {
   delete reader;
 }
 
-TEST(BlockBasedFilterBlockTest, BlockBasedSingleChunk) {
+TEST_F(BlockBasedFilterBlockTest, BlockBasedSingleChunk) {
   FilterBlockBuilder* builder = new BlockBasedFilterBlockBuilder(
       nullptr, table_options_);
   builder->StartBlock(100);
@@ -171,7 +174,7 @@ TEST(BlockBasedFilterBlockTest, BlockBasedSingleChunk) {
   builder->Add("hello");
   BlockContents block(builder->Finish(), false, kNoCompression);
   FilterBlockReader* reader = new BlockBasedFilterBlockReader(
-      nullptr, table_options_, std::move(block));
+      nullptr, table_options_, true, std::move(block));
   ASSERT_TRUE(reader->KeyMayMatch("foo", 100));
   ASSERT_TRUE(reader->KeyMayMatch("bar", 100));
   ASSERT_TRUE(reader->KeyMayMatch("box", 100));
@@ -184,7 +187,7 @@ TEST(BlockBasedFilterBlockTest, BlockBasedSingleChunk) {
   delete reader;
 }
 
-TEST(BlockBasedFilterBlockTest, BlockBasedMultiChunk) {
+TEST_F(BlockBasedFilterBlockTest, BlockBasedMultiChunk) {
   FilterBlockBuilder* builder = new BlockBasedFilterBlockBuilder(
       nullptr, table_options_);
 
@@ -207,7 +210,7 @@ TEST(BlockBasedFilterBlockTest, BlockBasedMultiChunk) {
 
   BlockContents block(builder->Finish(), false, kNoCompression);
   FilterBlockReader* reader = new BlockBasedFilterBlockReader(
-      nullptr, table_options_, std::move(block));
+      nullptr, table_options_, true, std::move(block));
 
   // Check first filter
   ASSERT_TRUE(reader->KeyMayMatch("foo", 0));
@@ -239,4 +242,7 @@ TEST(BlockBasedFilterBlockTest, BlockBasedMultiChunk) {
 
 }  // namespace rocksdb
 
-int main(int argc, char** argv) { return rocksdb::test::RunAllTests(); }
+int main(int argc, char** argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
+}

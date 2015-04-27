@@ -34,7 +34,7 @@ class DummyDB : public StackableDB {
      : StackableDB(nullptr), options_(options), dbname_(dbname),
        deletions_enabled_(true), sequence_number_(0) {}
 
-  virtual SequenceNumber GetLatestSequenceNumber() const {
+  virtual SequenceNumber GetLatestSequenceNumber() const override {
     return ++sequence_number_;
   }
 
@@ -53,20 +53,20 @@ class DummyDB : public StackableDB {
   }
 
   virtual Status EnableFileDeletions(bool force) override {
-    ASSERT_TRUE(!deletions_enabled_);
+    EXPECT_TRUE(!deletions_enabled_);
     deletions_enabled_ = true;
     return Status::OK();
   }
 
   virtual Status DisableFileDeletions() override {
-    ASSERT_TRUE(deletions_enabled_);
+    EXPECT_TRUE(deletions_enabled_);
     deletions_enabled_ = false;
     return Status::OK();
   }
 
   virtual Status GetLiveFiles(std::vector<std::string>& vec, uint64_t* mfs,
                               bool flush_memtable = true) override {
-    ASSERT_TRUE(!deletions_enabled_);
+    EXPECT_TRUE(!deletions_enabled_);
     vec = live_files_;
     *mfs = 100;
     return Status::OK();
@@ -86,9 +86,9 @@ class DummyDB : public StackableDB {
       return path_;
     }
 
-    virtual uint64_t LogNumber() const {
+    virtual uint64_t LogNumber() const override {
       // what business do you have calling this method?
-      ASSERT_TRUE(false);
+      EXPECT_TRUE(false);
       return 0;
     }
 
@@ -96,15 +96,15 @@ class DummyDB : public StackableDB {
       return alive_ ? kAliveLogFile : kArchivedLogFile;
     }
 
-    virtual SequenceNumber StartSequence() const {
+    virtual SequenceNumber StartSequence() const override {
       // backupabledb should not need this method
-      ASSERT_TRUE(false);
+      EXPECT_TRUE(false);
       return 0;
     }
 
-    virtual uint64_t SizeFileBytes() const {
+    virtual uint64_t SizeFileBytes() const override {
       // backupabledb should not need this method
-      ASSERT_TRUE(false);
+      EXPECT_TRUE(false);
       return 0;
     }
 
@@ -114,7 +114,7 @@ class DummyDB : public StackableDB {
   }; // DummyLogFile
 
   virtual Status GetSortedWalFiles(VectorLogPtr& files) override {
-    ASSERT_TRUE(!deletions_enabled_);
+    EXPECT_TRUE(!deletions_enabled_);
     files.resize(wal_files_.size());
     for (size_t i = 0; i < files.size(); ++i) {
       files[i].reset(
@@ -140,7 +140,7 @@ class TestEnv : public EnvWrapper {
   class DummySequentialFile : public SequentialFile {
    public:
     DummySequentialFile() : SequentialFile(), rnd_(5) {}
-    virtual Status Read(size_t n, Slice* result, char* scratch) {
+    virtual Status Read(size_t n, Slice* result, char* scratch) override {
       size_t read_size = (n > size_left) ? size_left : n;
       for (size_t i = 0; i < read_size; ++i) {
         scratch[i] = rnd_.Next() & 255;
@@ -150,7 +150,7 @@ class TestEnv : public EnvWrapper {
       return Status::OK();
     }
 
-    virtual Status Skip(uint64_t n) {
+    virtual Status Skip(uint64_t n) override {
       size_left = (n > size_left) ? size_left - n : 0;
       return Status::OK();
     }
@@ -159,9 +159,8 @@ class TestEnv : public EnvWrapper {
     Random rnd_;
   };
 
-  Status NewSequentialFile(const std::string& f,
-                           unique_ptr<SequentialFile>* r,
-                           const EnvOptions& options) {
+  Status NewSequentialFile(const std::string& f, unique_ptr<SequentialFile>* r,
+                           const EnvOptions& options) override {
     MutexLock l(&mutex_);
     if (dummy_sequential_file_) {
       r->reset(new TestEnv::DummySequentialFile());
@@ -172,7 +171,7 @@ class TestEnv : public EnvWrapper {
   }
 
   Status NewWritableFile(const std::string& f, unique_ptr<WritableFile>* r,
-                         const EnvOptions& options) {
+                         const EnvOptions& options) override {
     MutexLock l(&mutex_);
     written_files_.push_back(f);
     if (limit_written_files_ <= 0) {
@@ -184,7 +183,7 @@ class TestEnv : public EnvWrapper {
 
   virtual Status DeleteFile(const std::string& fname) override {
     MutexLock l(&mutex_);
-    ASSERT_GT(limit_delete_files_, 0U);
+    EXPECT_GT(limit_delete_files_, 0U);
     limit_delete_files_--;
     return EnvWrapper::DeleteFile(fname);
   }
@@ -328,7 +327,7 @@ static size_t FillDB(DB* db, int from, int to) {
     std::string value = "testvalue" + std::to_string(i);
     bytes_written += key.size() + value.size();
 
-    ASSERT_OK(db->Put(WriteOptions(), Slice(key), Slice(value)));
+    EXPECT_OK(db->Put(WriteOptions(), Slice(key), Slice(value)));
   }
   return bytes_written;
 }
@@ -352,7 +351,7 @@ static void AssertEmpty(DB* db, int from, int to) {
   }
 }
 
-class BackupableDBTest {
+class BackupableDBTest : public testing::Test {
  public:
   BackupableDBTest() {
     // set up files
@@ -383,7 +382,7 @@ class BackupableDBTest {
 
   DB* OpenDB() {
     DB* db;
-    ASSERT_OK(DB::Open(options_, dbname_, &db));
+    EXPECT_OK(DB::Open(options_, dbname_, &db));
     return db;
   }
 
@@ -496,7 +495,7 @@ void AppendPath(const std::string& path, std::vector<std::string>& v) {
 }
 
 // this will make sure that backup does not copy the same file twice
-TEST(BackupableDBTest, NoDoubleCopy) {
+TEST_F(BackupableDBTest, NoDoubleCopy) {
   OpenBackupableDB(true, true);
 
   // should write 5 DB files + LATEST_BACKUP + one meta file
@@ -567,7 +566,7 @@ TEST(BackupableDBTest, NoDoubleCopy) {
 //      fine
 // 4. Corrupted checksum value - if the checksum is not a valid uint32_t,
 //      db open should fail, otherwise, it aborts during the restore process.
-TEST(BackupableDBTest, CorruptionsTest) {
+TEST_F(BackupableDBTest, CorruptionsTest) {
   const int keys_iteration = 5000;
   Random rnd(6);
   Status s;
@@ -675,8 +674,41 @@ TEST(BackupableDBTest, CorruptionsTest) {
   AssertBackupConsistency(2, 0, keys_iteration * 2, keys_iteration * 5);
 }
 
+// This test verifies we don't delete the latest backup when read-only option is
+// set
+TEST_F(BackupableDBTest, NoDeleteWithReadOnly) {
+  const int keys_iteration = 5000;
+  Random rnd(6);
+  Status s;
+
+  OpenBackupableDB(true);
+  // create five backups
+  for (int i = 0; i < 5; ++i) {
+    FillDB(db_.get(), keys_iteration * i, keys_iteration * (i + 1));
+    ASSERT_OK(db_->CreateNewBackup(!!(rnd.Next() % 2)));
+  }
+  CloseBackupableDB();
+  ASSERT_OK(file_manager_->WriteToFile(backupdir_ + "/LATEST_BACKUP", "4"));
+
+  backupable_options_->destroy_old_data = false;
+  BackupEngineReadOnly* read_only_backup_engine;
+  ASSERT_OK(BackupEngineReadOnly::Open(env_, *backupable_options_,
+                                       &read_only_backup_engine));
+
+  // assert that data from backup 5 is still here (even though LATEST_BACKUP
+  // says 4 is latest)
+  ASSERT_TRUE(file_manager_->FileExists(backupdir_ + "/meta/5") == true);
+  ASSERT_TRUE(file_manager_->FileExists(backupdir_ + "/private/5") == true);
+
+  // even though 5 is here, we should only see 4 backups
+  std::vector<BackupInfo> backup_info;
+  read_only_backup_engine->GetBackupInfo(&backup_info);
+  ASSERT_EQ(4UL, backup_info.size());
+  delete read_only_backup_engine;
+}
+
 // open DB, write, close DB, backup, restore, repeat
-TEST(BackupableDBTest, OfflineIntegrationTest) {
+TEST_F(BackupableDBTest, OfflineIntegrationTest) {
   // has to be a big number, so that it triggers the memtable flush
   const int keys_iteration = 5000;
   const int max_key = keys_iteration * 4 + 10;
@@ -723,7 +755,7 @@ TEST(BackupableDBTest, OfflineIntegrationTest) {
 }
 
 // open DB, write, backup, write, backup, close, restore
-TEST(BackupableDBTest, OnlineIntegrationTest) {
+TEST_F(BackupableDBTest, OnlineIntegrationTest) {
   // has to be a big number, so that it triggers the memtable flush
   const int keys_iteration = 5000;
   const int max_key = keys_iteration * 4 + 10;
@@ -786,7 +818,7 @@ TEST(BackupableDBTest, OnlineIntegrationTest) {
   CloseRestoreDB();
 }
 
-TEST(BackupableDBTest, FailOverwritingBackups) {
+TEST_F(BackupableDBTest, FailOverwritingBackups) {
   options_.write_buffer_size = 1024 * 1024 * 1024;  // 1GB
   // create backups 1, 2, 3, 4, 5
   OpenBackupableDB(true);
@@ -821,7 +853,7 @@ TEST(BackupableDBTest, FailOverwritingBackups) {
   CloseBackupableDB();
 }
 
-TEST(BackupableDBTest, NoShareTableFiles) {
+TEST_F(BackupableDBTest, NoShareTableFiles) {
   const int keys_iteration = 5000;
   OpenBackupableDB(true, false, false);
   for (int i = 0; i < 5; ++i) {
@@ -837,7 +869,7 @@ TEST(BackupableDBTest, NoShareTableFiles) {
 }
 
 // Verify that you can backup and restore with share_files_with_checksum on
-TEST(BackupableDBTest, ShareTableFilesWithChecksums) {
+TEST_F(BackupableDBTest, ShareTableFilesWithChecksums) {
   const int keys_iteration = 5000;
   OpenBackupableDB(true, false, true, true);
   for (int i = 0; i < 5; ++i) {
@@ -854,7 +886,7 @@ TEST(BackupableDBTest, ShareTableFilesWithChecksums) {
 
 // Verify that you can backup and restore using share_files_with_checksum set to
 // false and then transition this option to true
-TEST(BackupableDBTest, ShareTableFilesWithChecksumsTransition) {
+TEST_F(BackupableDBTest, ShareTableFilesWithChecksumsTransition) {
   const int keys_iteration = 5000;
   // set share_files_with_checksum to false
   OpenBackupableDB(true, false, true, false);
@@ -883,7 +915,7 @@ TEST(BackupableDBTest, ShareTableFilesWithChecksumsTransition) {
   }
 }
 
-TEST(BackupableDBTest, DeleteTmpFiles) {
+TEST_F(BackupableDBTest, DeleteTmpFiles) {
   OpenBackupableDB();
   CloseBackupableDB();
   std::string shared_tmp = backupdir_ + "/shared/00006.sst.tmp";
@@ -902,7 +934,7 @@ TEST(BackupableDBTest, DeleteTmpFiles) {
   ASSERT_EQ(false, file_manager_->FileExists(private_tmp_dir));
 }
 
-TEST(BackupableDBTest, KeepLogFiles) {
+TEST_F(BackupableDBTest, KeepLogFiles) {
   backupable_options_->backup_log_files = false;
   // basically infinite
   options_.WAL_ttl_seconds = 24 * 60 * 60;
@@ -923,7 +955,7 @@ TEST(BackupableDBTest, KeepLogFiles) {
   AssertBackupConsistency(0, 0, 500, 600, true);
 }
 
-TEST(BackupableDBTest, RateLimiting) {
+TEST_F(BackupableDBTest, RateLimiting) {
   uint64_t const KB = 1024 * 1024;
   size_t const kMicrosPerSec = 1000 * 1000LL;
 
@@ -962,7 +994,7 @@ TEST(BackupableDBTest, RateLimiting) {
   }
 }
 
-TEST(BackupableDBTest, ReadOnlyBackupEngine) {
+TEST_F(BackupableDBTest, ReadOnlyBackupEngine) {
   DestroyDB(dbname_, Options());
   OpenBackupableDB(true);
   FillDB(db_.get(), 0, 100);
@@ -975,8 +1007,9 @@ TEST(BackupableDBTest, ReadOnlyBackupEngine) {
   backupable_options_->destroy_old_data = false;
   test_backup_env_->ClearWrittenFiles();
   test_backup_env_->SetLimitDeleteFiles(0);
-  auto read_only_backup_engine =
-      BackupEngineReadOnly::NewReadOnlyBackupEngine(env_, *backupable_options_);
+  BackupEngineReadOnly* read_only_backup_engine;
+  ASSERT_OK(BackupEngineReadOnly::Open(env_, *backupable_options_,
+                                       &read_only_backup_engine));
   std::vector<BackupInfo> backup_info;
   read_only_backup_engine->GetBackupInfo(&backup_info);
   ASSERT_EQ(backup_info.size(), 2U);
@@ -998,5 +1031,6 @@ TEST(BackupableDBTest, ReadOnlyBackupEngine) {
 } //  namespace rocksdb
 
 int main(int argc, char** argv) {
-  return rocksdb::test::RunAllTests();
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
 }

@@ -14,15 +14,18 @@
 #include <unordered_map>
 #include <string>
 #include <vector>
+
+#include "port/port.h"
+#include "rocksdb/options.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/status.h"
 #include "rocksdb/transaction_log.h"
-#include "port/port.h"
 
 namespace rocksdb {
 
 class Env;
 class Directory;
+class WritableFile;
 
 enum FileType {
   kLogFile,
@@ -134,5 +137,9 @@ extern Status SetCurrentFile(Env* env, const std::string& dbname,
 
 // Make the IDENTITY file for the db
 extern Status SetIdentityFile(Env* env, const std::string& dbname);
+
+// Sync manifest file `file`.
+extern Status SyncManifest(Env* env, const DBOptions* db_options,
+                           WritableFile* file);
 
 }  // namespace rocksdb

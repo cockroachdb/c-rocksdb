@@ -53,16 +53,16 @@ class CompactionJob {
   // TODO(icanadi) make effort to reduce number of parameters here
   // IMPORTANT: mutable_cf_options needs to be alive while CompactionJob is
   // alive
-  CompactionJob(Compaction* compaction, const DBOptions& db_options,
+  CompactionJob(int job_id, Compaction* compaction, const DBOptions& db_options,
                 const MutableCFOptions& mutable_cf_options,
                 const EnvOptions& env_options, VersionSet* versions,
                 std::atomic<bool>* shutting_down, LogBuffer* log_buffer,
-                Directory* db_directory, Statistics* stats,
-                SnapshotList* snapshot_list, bool is_snapshot_supported,
-                std::shared_ptr<Cache> table_cache,
+                Directory* db_directory, Directory* output_directory,
+                Statistics* stats, SnapshotList* snapshot_list,
+                bool is_snapshot_supported, std::shared_ptr<Cache> table_cache,
                 std::function<uint64_t()> yield_callback);
 
-  ~CompactionJob() { assert(compact_ == nullptr); }
+  ~CompactionJob();
 
   // no copy/move
   CompactionJob(CompactionJob&& job) = delete;
@@ -75,7 +75,7 @@ class CompactionJob {
   Status Run();
   // REQUIRED: mutex held
   // status is the return of Run()
-  void Install(Status* status, port::Mutex* db_mutex);
+  void Install(Status* status, InstrumentedMutex* db_mutex);
 
  private:
   void AllocateCompactionOutputFileNumbers();
@@ -84,15 +84,18 @@ class CompactionJob {
   Status ProcessKeyValueCompaction(int64_t* imm_micros, Iterator* input,
                                    bool is_compaction_v2);
   // Call compaction_filter_v2->Filter() on kv-pairs in compact
-  void CallCompactionFilterV2(CompactionFilterV2* compaction_filter_v2);
+  void CallCompactionFilterV2(CompactionFilterV2* compaction_filter_v2,
+                              uint64_t* time);
   Status FinishCompactionOutputFile(Iterator* input);
-  Status InstallCompactionResults(port::Mutex* db_mutex);
+  Status InstallCompactionResults(InstrumentedMutex* db_mutex);
   SequenceNumber findEarliestVisibleSnapshot(
       SequenceNumber in, const std::vector<SequenceNumber>& snapshots,
       SequenceNumber* prev_snapshot);
   void RecordCompactionIOStats();
   Status OpenCompactionOutputFile();
   void CleanupCompaction(const Status& status);
+
+  int job_id_;
 
   // CompactionJob state
   struct CompactionState;
@@ -114,6 +117,7 @@ class CompactionJob {
   std::atomic<bool>* shutting_down_;
   LogBuffer* log_buffer_;
   Directory* db_directory_;
+  Directory* output_directory_;
   Statistics* stats_;
   SnapshotList* snapshots_;
   bool is_snapshot_supported_;

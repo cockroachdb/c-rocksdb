@@ -29,13 +29,24 @@ typedef std::atomic<void*> Pointer;
 // A data structure used as the header of a link list of a hash bucket.
 struct BucketHeader {
   Pointer next;
-  uint32_t num_entries;
+  std::atomic<uint32_t> num_entries;
 
   explicit BucketHeader(void* n, uint32_t count)
       : next(n), num_entries(count) {}
 
   bool IsSkipListBucket() {
     return next.load(std::memory_order_relaxed) == this;
+  }
+
+  uint32_t GetNumEntries() const {
+    return num_entries.load(std::memory_order_relaxed);
+  }
+
+  // REQUIRES: called from single-threaded Insert()
+  void IncNumEntries() {
+    // Only one thread can do write at one time. No need to do atomic
+    // incremental. Update it with relaxed load and store.
+    num_entries.store(GetNumEntries() + 1, std::memory_order_relaxed);
   }
 };
 
@@ -241,33 +252,32 @@ class HashLinkListRep : public MemTableRep {
     }
 
     // Returns true iff the iterator is positioned at a valid node.
-    virtual bool Valid() const {
-      return iter_.Valid();
-    }
+    virtual bool Valid() const override { return iter_.Valid(); }
 
     // Returns the key at the current position.
     // REQUIRES: Valid()
-    virtual const char* key() const {
+    virtual const char* key() const override {
       assert(Valid());
       return iter_.key();
     }
 
     // Advances to the next position.
     // REQUIRES: Valid()
-    virtual void Next() {
+    virtual void Next() override {
       assert(Valid());
       iter_.Next();
     }
 
     // Advances to the previous position.
     // REQUIRES: Valid()
-    virtual void Prev() {
+    virtual void Prev() override {
       assert(Valid());
       iter_.Prev();
     }
 
     // Advance to the first entry with a key >= target
-    virtual void Seek(const Slice& internal_key, const char* memtable_key) {
+    virtual void Seek(const Slice& internal_key,
+                      const char* memtable_key) override {
       const char* encoded_key =
           (memtable_key != nullptr) ?
               memtable_key : EncodeKey(&tmp_, internal_key);
@@ -276,15 +286,11 @@ class HashLinkListRep : public MemTableRep {
 
     // Position at the first entry in collection.
     // Final state of iterator is Valid() iff collection is not empty.
-    virtual void SeekToFirst() {
-      iter_.SeekToFirst();
-    }
+    virtual void SeekToFirst() override { iter_.SeekToFirst(); }
 
     // Position at the last entry in collection.
     // Final state of iterator is Valid() iff collection is not empty.
-    virtual void SeekToLast() {
-      iter_.SeekToLast();
-    }
+    virtual void SeekToLast() override { iter_.SeekToLast(); }
    private:
     MemtableSkipList::Iterator iter_;
     // To destruct with the iterator.
@@ -304,41 +310,40 @@ class HashLinkListRep : public MemTableRep {
     virtual ~LinkListIterator() {}
 
     // Returns true iff the iterator is positioned at a valid node.
-    virtual bool Valid() const {
-      return node_ != nullptr;
-    }
+    virtual bool Valid() const override { return node_ != nullptr; }
 
     // Returns the key at the current position.
     // REQUIRES: Valid()
-    virtual const char* key() const {
+    virtual const char* key() const override {
       assert(Valid());
       return node_->key;
     }
 
     // Advances to the next position.
     // REQUIRES: Valid()
-    virtual void Next() {
+    virtual void Next() override {
       assert(Valid());
       node_ = node_->Next();
     }
 
     // Advances to the previous position.
     // REQUIRES: Valid()
-    virtual void Prev() {
+    virtual void Prev() override {
       // Prefix iterator does not support total order.
       // We simply set the iterator to invalid state
       Reset(nullptr);
     }
 
     // Advance to the first entry with a key >= target
-    virtual void Seek(const Slice& internal_key, const char* memtable_key) {
+    virtual void Seek(const Slice& internal_key,
+                      const char* memtable_key) override {
       node_ = hash_link_list_rep_->FindGreaterOrEqualInBucket(head_,
                                                               internal_key);
     }
 
     // Position at the first entry in collection.
     // Final state of iterator is Valid() iff collection is not empty.
-    virtual void SeekToFirst() {
+    virtual void SeekToFirst() override {
       // Prefix iterator does not support total order.
       // We simply set the iterator to invalid state
       Reset(nullptr);
@@ -346,7 +351,7 @@ class HashLinkListRep : public MemTableRep {
 
     // Position at the last entry in collection.
     // Final state of iterator is Valid() iff collection is not empty.
-    virtual void SeekToLast() {
+    virtual void SeekToLast() override {
       // Prefix iterator does not support total order.
       // We simply set the iterator to invalid state
       Reset(nullptr);
@@ -375,7 +380,7 @@ class HashLinkListRep : public MemTableRep {
           memtable_rep_(memtable_rep) {}
 
     // Advance to the first entry with a key >= target
-    virtual void Seek(const Slice& k, const char* memtable_key) {
+    virtual void Seek(const Slice& k, const char* memtable_key) override {
       auto transformed = memtable_rep_.GetPrefix(k);
       auto* bucket = memtable_rep_.GetBucket(transformed);
 
@@ -404,21 +409,21 @@ class HashLinkListRep : public MemTableRep {
       }
     }
 
-    virtual bool Valid() const {
+    virtual bool Valid() const override {
       if (skip_list_iter_) {
         return skip_list_iter_->Valid();
       }
       return HashLinkListRep::LinkListIterator::Valid();
     }
 
-    virtual const char* key() const {
+    virtual const char* key() const override {
       if (skip_list_iter_) {
         return skip_list_iter_->key();
       }
       return HashLinkListRep::LinkListIterator::key();
     }
 
-    virtual void Next() {
+    virtual void Next() override {
       if (skip_list_iter_) {
         skip_list_iter_->Next();
       } else {
@@ -437,18 +442,18 @@ class HashLinkListRep : public MemTableRep {
     // instantiating an empty bucket over which to iterate.
    public:
     EmptyIterator() { }
-    virtual bool Valid() const {
-      return false;
-    }
-    virtual const char* key() const {
+    virtual bool Valid() const override { return false; }
+    virtual const char* key() const override {
       assert(false);
       return nullptr;
     }
-    virtual void Next() { }
-    virtual void Prev() { }
-    virtual void Seek(const Slice& user_key, const char* memtable_key) { }
-    virtual void SeekToFirst() { }
-    virtual void SeekToLast() { }
+    virtual void Next() override {}
+    virtual void Prev() override {}
+    virtual void Seek(const Slice& user_key,
+                      const char* memtable_key) override {}
+    virtual void SeekToFirst() override {}
+    virtual void SeekToLast() override {}
+
    private:
   };
 };
@@ -503,14 +508,14 @@ SkipListBucketHeader* HashLinkListRep::GetSkipListBucketHeader(
   // Counting header
   BucketHeader* header = reinterpret_cast<BucketHeader*>(first_next_pointer);
   if (header->IsSkipListBucket()) {
-    assert(header->num_entries > threshold_use_skiplist_);
+    assert(header->GetNumEntries() > threshold_use_skiplist_);
     auto* skip_list_bucket_header =
         reinterpret_cast<SkipListBucketHeader*>(header);
     assert(skip_list_bucket_header->Counting_header.next.load(
                std::memory_order_relaxed) == header);
     return skip_list_bucket_header;
   }
-  assert(header->num_entries <= threshold_use_skiplist_);
+  assert(header->GetNumEntries() <= threshold_use_skiplist_);
   return nullptr;
 }
 
@@ -525,11 +530,11 @@ Node* HashLinkListRep::GetLinkListFirstNode(Pointer* first_next_pointer) const {
   // Counting header
   BucketHeader* header = reinterpret_cast<BucketHeader*>(first_next_pointer);
   if (!header->IsSkipListBucket()) {
-    assert(header->num_entries <= threshold_use_skiplist_);
+    assert(header->GetNumEntries() <= threshold_use_skiplist_);
     return reinterpret_cast<Node*>(
-        header->next.load(std::memory_order_relaxed));
+        header->next.load(std::memory_order_acquire));
   }
-  assert(header->num_entries > threshold_use_skiplist_);
+  assert(header->GetNumEntries() > threshold_use_skiplist_);
   return nullptr;
 }
 
@@ -568,26 +573,28 @@ void HashLinkListRep::Insert(KeyHandle handle) {
     header = reinterpret_cast<BucketHeader*>(first_next_pointer);
     if (header->IsSkipListBucket()) {
       // Case 4. Bucket is already a skip list
-      assert(header->num_entries > threshold_use_skiplist_);
+      assert(header->GetNumEntries() > threshold_use_skiplist_);
       auto* skip_list_bucket_header =
           reinterpret_cast<SkipListBucketHeader*>(header);
-      skip_list_bucket_header->Counting_header.num_entries++;
+      // Only one thread can execute Insert() at one time. No need to do atomic
+      // incremental.
+      skip_list_bucket_header->Counting_header.IncNumEntries();
       skip_list_bucket_header->skip_list.Insert(x->key);
       return;
     }
   }
 
   if (bucket_entries_logging_threshold_ > 0 &&
-      header->num_entries ==
+      header->GetNumEntries() ==
           static_cast<uint32_t>(bucket_entries_logging_threshold_)) {
     Info(logger_,
          "HashLinkedList bucket %zu has more than %d "
          "entries. Key to insert: %s",
-         GetHash(transformed), header->num_entries,
+         GetHash(transformed), header->GetNumEntries(),
          GetLengthPrefixedSlice(x->key).ToString(true).c_str());
   }
 
-  if (header->num_entries == threshold_use_skiplist_) {
+  if (header->GetNumEntries() == threshold_use_skiplist_) {
     // Case 3. number of entries reaches the threshold so need to convert to
     // skip list.
     LinkListIterator bucket_iter(
@@ -595,7 +602,7 @@ void HashLinkListRep::Insert(KeyHandle handle) {
                   first_next_pointer->load(std::memory_order_relaxed)));
     auto mem = allocator_->AllocateAligned(sizeof(SkipListBucketHeader));
     SkipListBucketHeader* new_skip_list_header = new (mem)
-        SkipListBucketHeader(compare_, allocator_, header->num_entries + 1);
+        SkipListBucketHeader(compare_, allocator_, header->GetNumEntries() + 1);
     auto& skip_list = new_skip_list_header->skip_list;
 
     // Add all current entries to the skip list
@@ -616,7 +623,7 @@ void HashLinkListRep::Insert(KeyHandle handle) {
     // Advance counter unless the bucket needs to be advanced to skip list.
     // In that case, we need to make sure the previous count never exceeds
     // threshold_use_skiplist_ to avoid readers to cast to wrong format.
-    header->num_entries++;
+    header->IncNumEntries();
 
     Node* cur = first;
     Node* prev = nullptr;

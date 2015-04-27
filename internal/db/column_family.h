@@ -21,9 +21,10 @@
 #include "db/write_batch_internal.h"
 #include "db/write_controller.h"
 #include "db/table_cache.h"
-#include "util/thread_local.h"
 #include "db/flush_scheduler.h"
+#include "util/instrumented_mutex.h"
 #include "util/mutable_cf_options.h"
+#include "util/thread_local.h"
 
 namespace rocksdb {
 
@@ -38,6 +39,8 @@ class InternalStats;
 class ColumnFamilyData;
 class DBImpl;
 class LogBuffer;
+class InstrumentedMutex;
+class InstrumentedMutexLock;
 
 // ColumnFamilyHandleImpl is the class that clients use to access different
 // column families. It has non-trivial destructor, which gets called when client
@@ -45,19 +48,20 @@ class LogBuffer;
 class ColumnFamilyHandleImpl : public ColumnFamilyHandle {
  public:
   // create while holding the mutex
-  ColumnFamilyHandleImpl(ColumnFamilyData* cfd, DBImpl* db, port::Mutex* mutex);
+  ColumnFamilyHandleImpl(
+      ColumnFamilyData* cfd, DBImpl* db, InstrumentedMutex* mutex);
   // destroy without mutex
   virtual ~ColumnFamilyHandleImpl();
   virtual ColumnFamilyData* cfd() const { return cfd_; }
   virtual const Comparator* user_comparator() const;
 
-  virtual uint32_t GetID() const;
+  virtual uint32_t GetID() const override;
   virtual const std::string& GetName() const override;
 
  private:
   ColumnFamilyData* cfd_;
   DBImpl* db_;
-  port::Mutex* mutex_;
+  InstrumentedMutex* mutex_;
 };
 
 // Does not ref-count ColumnFamilyData
@@ -91,7 +95,7 @@ struct SuperVersion {
   autovector<MemTable*> to_delete;
   // Version number of the current SuperVersion
   uint64_t version_number;
-  port::Mutex* db_mutex;
+  InstrumentedMutex* db_mutex;
 
   // should be called outside the mutex
   SuperVersion() = default;
@@ -118,13 +122,13 @@ struct SuperVersion {
   static void* const kSVObsolete;
 };
 
-extern ColumnFamilyOptions SanitizeOptions(const InternalKeyComparator* icmp,
+extern ColumnFamilyOptions SanitizeOptions(const DBOptions& db_options,
+                                           const InternalKeyComparator* icmp,
                                            const ColumnFamilyOptions& src);
 
 class ColumnFamilySet;
 
-// This class keeps all the data that a column family needs. It's mosly dumb and
-// used just to provide access to metadata.
+// This class keeps all the data that a column family needs.
 // Most methods require DB mutex held, unless otherwise noted
 class ColumnFamilyData {
  public:
@@ -135,35 +139,37 @@ class ColumnFamilyData {
   // thread-safe
   const std::string& GetName() const { return name_; }
 
-  void Ref() { ++refs_; }
+  // Ref() can only be called whily holding a DB mutex or during a
+  // single-threaded write.
+  void Ref() { refs_.fetch_add(1, std::memory_order_relaxed); }
   // will just decrease reference count to 0, but will not delete it. returns
   // true if the ref count was decreased to zero. in that case, it can be
   // deleted by the caller immediately, or later, by calling
   // FreeDeadColumnFamilies()
+  // Unref() can only be called while holding a DB mutex
   bool Unref() {
-    assert(refs_ > 0);
-    return --refs_ == 0;
+    int old_refs = refs_.fetch_sub(1, std::memory_order_relaxed);
+    assert(old_refs > 0);
+    return old_refs == 1;
   }
 
-  // This can only be called from single-threaded VersionSet::LogAndApply()
+  // SetDropped() can only be called under following conditions:
+  // 1) Holding a DB mutex,
+  // 2) from single-threaded write thread, AND
+  // 3) from single-threaded VersionSet::LogAndApply()
   // After dropping column family no other operation on that column family
   // will be executed. All the files and memory will be, however, kept around
   // until client drops the column family handle. That way, client can still
   // access data from dropped column family.
   // Column family can be dropped and still alive. In that state:
-  // *) Column family is not included in the iteration.
   // *) Compaction and flush is not executed on the dropped column family.
-  // *) Client can continue writing and reading from column family. However, all
-  // writes stay in the current memtable.
+  // *) Client can continue reading from column family. Writes will fail unless
+  // WriteOptions::ignore_missing_column_families is true
   // When the dropped column family is unreferenced, then we:
+  // *) Remove column family from the linked list maintained by ColumnFamilySet
   // *) delete all memory associated with that column family
   // *) delete all the files associated with that column family
-  void SetDropped() {
-    // can't drop default CF
-    assert(id_ != 0);
-    dropped_ = true;
-    write_controller_token_.reset();
-  }
+  void SetDropped();
   bool IsDropped() const { return dropped_; }
 
   // thread-safe
@@ -202,6 +208,8 @@ class ColumnFamilyData {
   Version* current() { return current_; }
   Version* dummy_versions() { return dummy_versions_; }
   void SetCurrent(Version* current);
+  uint64_t GetNumLiveVersions() const;  // REQUIRE: DB mutex held
+
   MemTable* ConstructNewMemtable(const MutableCFOptions& mutable_cf_options);
   void SetMemtable(MemTable* new_mem) { mem_ = new_mem; }
   void CreateNewMemtable(const MutableCFOptions& mutable_cf_options);
@@ -210,8 +218,11 @@ class ColumnFamilyData {
 
   // See documentation in compaction_picker.h
   // REQUIRES: DB mutex held
+  bool NeedsCompaction() const;
+  // REQUIRES: DB mutex held
   Compaction* PickCompaction(const MutableCFOptions& mutable_options,
                              LogBuffer* log_buffer);
+  // REQUIRES: DB mutex held
   Compaction* CompactRange(
       const MutableCFOptions& mutable_cf_options,
       int input_level, int output_level, uint32_t output_path_id,
@@ -231,11 +242,11 @@ class ColumnFamilyData {
   SuperVersion* GetSuperVersion() { return super_version_; }
   // thread-safe
   // Return a already referenced SuperVersion to be used safely.
-  SuperVersion* GetReferencedSuperVersion(port::Mutex* db_mutex);
+  SuperVersion* GetReferencedSuperVersion(InstrumentedMutex* db_mutex);
   // thread-safe
   // Get SuperVersion stored in thread local storage. If it does not exist,
   // get a reference from a current SuperVersion.
-  SuperVersion* GetThreadLocalSuperVersion(port::Mutex* db_mutex);
+  SuperVersion* GetThreadLocalSuperVersion(InstrumentedMutex* db_mutex);
   // Try to return SuperVersion back to thread local storage. Retrun true on
   // success and false on failure. It fails when the thread local storage
   // contains anything other than SuperVersion::kSVInUse flag.
@@ -248,18 +259,27 @@ class ColumnFamilyData {
   // if its reference count is zero and needs deletion or nullptr if not
   // As argument takes a pointer to allocated SuperVersion to enable
   // the clients to allocate SuperVersion outside of mutex.
+  // IMPORTANT: Only call this from DBImpl::InstallSuperVersion()
   SuperVersion* InstallSuperVersion(SuperVersion* new_superversion,
-                                    port::Mutex* db_mutex,
+                                    InstrumentedMutex* db_mutex,
                                     const MutableCFOptions& mutable_cf_options);
   SuperVersion* InstallSuperVersion(SuperVersion* new_superversion,
-                                    port::Mutex* db_mutex);
+                                    InstrumentedMutex* db_mutex);
 
   void ResetThreadLocalSuperVersions();
+
+  void NotifyOnCompactionCompleted(DB* db, Compaction* c, const Status& status);
 
   void NotifyOnFlushCompleted(
       DB* db, const std::string& file_path,
       bool triggered_flush_slowdown,
       bool triggered_flush_stop);
+
+  // Protected by DB mutex
+  void set_pending_flush(bool value) { pending_flush_ = value; }
+  void set_pending_compaction(bool value) { pending_compaction_ = value; }
+  bool pending_flush() { return pending_flush_; }
+  bool pending_compaction() { return pending_compaction_; }
 
  private:
   friend class ColumnFamilySet;
@@ -283,7 +303,7 @@ class ColumnFamilyData {
   Version* dummy_versions_;  // Head of circular doubly-linked list of versions.
   Version* current_;         // == dummy_versions->prev_
 
-  int refs_;                   // outstanding references to ColumnFamilyData
+  std::atomic<int> refs_;      // outstanding references to ColumnFamilyData
   bool dropped_;               // true if client dropped it
 
   const InternalKeyComparator internal_comparator_;
@@ -311,8 +331,9 @@ class ColumnFamilyData {
   // This needs to be destructed before mutex_
   std::unique_ptr<ThreadLocalPtr> local_sv_;
 
-  // pointers for a circular linked list. we use it to support iterations
-  // that can be concurrent with writes
+  // pointers for a circular linked list. we use it to support iterations over
+  // all column families that are alive (note: dropped column families can also
+  // be alive as long as client holds a reference)
   ColumnFamilyData* next_;
   ColumnFamilyData* prev_;
 
@@ -328,21 +349,31 @@ class ColumnFamilyData {
   ColumnFamilySet* column_family_set_;
 
   std::unique_ptr<WriteControllerToken> write_controller_token_;
+
+  // If true --> this ColumnFamily is currently present in DBImpl::flush_queue_
+  bool pending_flush_;
+
+  // If true --> this ColumnFamily is currently present in
+  // DBImpl::compaction_queue_
+  bool pending_compaction_;
 };
 
 // ColumnFamilySet has interesting thread-safety requirements
-// * CreateColumnFamily() or RemoveColumnFamily() -- need to protect by DB
-// mutex. Inside, column_family_data_ and column_families_ will be protected
-// by Lock() and Unlock(). CreateColumnFamily() should ONLY be called from
-// VersionSet::LogAndApply() in the normal runtime. It is also called
-// during Recovery and in DumpManifest(). RemoveColumnFamily() is called
-// from ColumnFamilyData destructor
+// * CreateColumnFamily() or RemoveColumnFamily() -- need to be protected by DB
+// mutex AND executed in the write thread.
+// CreateColumnFamily() should ONLY be called from VersionSet::LogAndApply() AND
+// single-threaded write thread. It is also called during Recovery and in
+// DumpManifest().
+// RemoveColumnFamily() is only called from SetDropped(). DB mutex needs to be
+// held and it needs to be executed from the write thread. SetDropped() also
+// guarantees that it will be called only from single-threaded LogAndApply(),
+// but this condition is not that important.
 // * Iteration -- hold DB mutex, but you can release it in the body of
 // iteration. If you release DB mutex in body, reference the column
 // family before the mutex and unreference after you unlock, since the column
 // family might get dropped when the DB mutex is released
 // * GetDefault() -- thread safe
-// * GetColumnFamily() -- either inside of DB mutex or call Lock() <-> Unlock()
+// * GetColumnFamily() -- either inside of DB mutex or from a write thread
 // * GetNextColumnFamilyID(), GetMaxColumnFamily(), UpdateMaxColumnFamily(),
 // NumberOfColumnFamilies -- inside of DB mutex
 class ColumnFamilySet {
@@ -353,10 +384,13 @@ class ColumnFamilySet {
     explicit iterator(ColumnFamilyData* cfd)
         : current_(cfd) {}
     iterator& operator++() {
-      // dummy is never dead or dropped, so this will never be infinite
+      // dropped column families might still be included in this iteration
+      // (we're only removing them when client drops the last reference to the
+      // column family).
+      // dummy is never dead, so this will never be infinite
       do {
         current_ = current_->next_;
-      } while (current_->refs_ == 0 || current_->IsDropped());
+      } while (current_->refs_.load(std::memory_order_relaxed) == 0);
       return *this;
     }
     bool operator!=(const iterator& other) {
@@ -393,9 +427,6 @@ class ColumnFamilySet {
   iterator begin() { return iterator(dummy_cfd_->next_); }
   iterator end() { return iterator(dummy_cfd_); }
 
-  void Lock();
-  void Unlock();
-
   // REQUIRES: DB mutex held
   // Don't call while iterating over ColumnFamilySet
   void FreeDeadColumnFamilies();
@@ -407,9 +438,12 @@ class ColumnFamilySet {
   void RemoveColumnFamily(ColumnFamilyData* cfd);
 
   // column_families_ and column_family_data_ need to be protected:
-  // * when mutating: 1. DB mutex locked first, 2. spinlock locked second
-  // * when reading, either: 1. lock DB mutex, or 2. lock spinlock
-  //  (if both, respect the ordering to avoid deadlock!)
+  // * when mutating both conditions have to be satisfied:
+  // 1. DB mutex locked
+  // 2. thread currently in single-threaded write thread
+  // * when reading, at least one condition needs to be satisfied:
+  // 1. DB mutex locked
+  // 2. accessed from a single-threaded write thread
   std::unordered_map<std::string, uint32_t> column_families_;
   std::unordered_map<uint32_t, ColumnFamilyData*> column_family_data_;
 
@@ -427,7 +461,6 @@ class ColumnFamilySet {
   Cache* table_cache_;
   WriteBuffer* write_buffer_;
   WriteController* write_controller_;
-  std::atomic_flag spin_lock_;
 };
 
 // We use ColumnFamilyMemTablesImpl to provide WriteBatch a way to access
@@ -442,17 +475,22 @@ class ColumnFamilyMemTablesImpl : public ColumnFamilyMemTables {
 
   // sets current_ to ColumnFamilyData with column_family_id
   // returns false if column family doesn't exist
+  // REQUIRES: under a DB mutex OR from a write thread
   bool Seek(uint32_t column_family_id) override;
 
   // Returns log number of the selected column family
+  // REQUIRES: under a DB mutex OR from a write thread
   uint64_t GetLogNumber() const override;
 
   // REQUIRES: Seek() called first
+  // REQUIRES: under a DB mutex OR from a write thread
   virtual MemTable* GetMemTable() const override;
 
   // Returns column family handle for the selected column family
+  // REQUIRES: under a DB mutex OR from a write thread
   virtual ColumnFamilyHandle* GetColumnFamilyHandle() override;
 
+  // REQUIRES: under a DB mutex OR from a write thread
   virtual void CheckMemtableFull() override;
 
  private:

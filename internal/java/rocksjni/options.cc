@@ -70,6 +70,17 @@ void Java_org_rocksdb_Options_disposeInternal(
 
 /*
  * Class:     org_rocksdb_Options
+ * Method:    setIncreaseParallelism
+ * Signature: (JI)V
+ */
+void Java_org_rocksdb_Options_setIncreaseParallelism(
+    JNIEnv * evnv, jobject jobj, jlong jhandle, jint totalThreads) {
+  reinterpret_cast<rocksdb::Options*>
+      (jhandle)->IncreaseParallelism(static_cast<int>(totalThreads));
+}
+
+/*
+ * Class:     org_rocksdb_Options
  * Method:    setCreateIfMissing
  * Signature: (JZ)V
  */
@@ -178,7 +189,7 @@ void Java_org_rocksdb_Options_setWriteBufferSize(
     reinterpret_cast<rocksdb::Options*>(jhandle)->write_buffer_size =
         jwrite_buffer_size;
   } else {
-    rocksdb::RocksDBExceptionJni::ThrowNew(env, s);
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
   }
 }
 
@@ -508,7 +519,7 @@ void Java_org_rocksdb_Options_setMaxLogFileSize(
     reinterpret_cast<rocksdb::Options*>(jhandle)->max_log_file_size =
         max_log_file_size;
   } else {
-    rocksdb::RocksDBExceptionJni::ThrowNew(env, s);
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
   }
 }
 
@@ -535,7 +546,7 @@ void Java_org_rocksdb_Options_setLogFileTimeToRoll(
     reinterpret_cast<rocksdb::Options*>(jhandle)->log_file_time_to_roll =
         log_file_time_to_roll;
   } else {
-    rocksdb::RocksDBExceptionJni::ThrowNew(env, s);
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
   }
 }
 
@@ -561,7 +572,7 @@ void Java_org_rocksdb_Options_setKeepLogFileNum(
     reinterpret_cast<rocksdb::Options*>(jhandle)->keep_log_file_num =
         keep_log_file_num;
   } else {
-    rocksdb::RocksDBExceptionJni::ThrowNew(env, s);
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
   }
 }
 
@@ -630,6 +641,19 @@ void Java_org_rocksdb_Options_setRateLimiter(
 
 /*
  * Class:     org_rocksdb_Options
+ * Method:    setLogger
+ * Signature: (JJ)V
+ */
+void Java_org_rocksdb_Options_setLogger(
+    JNIEnv* env, jobject jobj, jlong jhandle, jlong jlogger_handle) {
+std::shared_ptr<rocksdb::LoggerJniCallback> *pLogger =
+      reinterpret_cast<std::shared_ptr<rocksdb::LoggerJniCallback> *>(
+          jlogger_handle);
+  reinterpret_cast<rocksdb::Options*>(jhandle)->info_log = *pLogger;
+}
+
+/*
+ * Class:     org_rocksdb_Options
  * Method:    setInfoLogLevel
  * Signature: (JB)V
  */
@@ -678,8 +702,8 @@ void Java_org_rocksdb_Options_setTableCacheNumshardbits(
  */
 jint Java_org_rocksdb_Options_tableCacheRemoveScanCountLimit(
     JNIEnv* env, jobject jobj, jlong jhandle) {
-  return reinterpret_cast<rocksdb::Options*>(
-      jhandle)->table_cache_remove_scan_count_limit;
+  // deprecated
+  return 0;
 }
 
 /*
@@ -689,8 +713,7 @@ jint Java_org_rocksdb_Options_tableCacheRemoveScanCountLimit(
  */
 void Java_org_rocksdb_Options_setTableCacheRemoveScanCountLimit(
     JNIEnv* env, jobject jobj, jlong jhandle, jint limit) {
-  reinterpret_cast<rocksdb::Options*>(
-      jhandle)->table_cache_remove_scan_count_limit = static_cast<int>(limit);
+  // deprecated
 }
 
 /*
@@ -769,7 +792,7 @@ void Java_org_rocksdb_Options_setManifestPreallocationSize(
     reinterpret_cast<rocksdb::Options*>(jhandle)->manifest_preallocation_size =
         preallocation_size;
   } else {
-    rocksdb::RocksDBExceptionJni::ThrowNew(env, s);
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
   }
 }
 
@@ -1036,6 +1059,80 @@ jbyte Java_org_rocksdb_Options_compressionType(
 }
 
 /*
+ * Helper method to convert a Java list to a CompressionType
+ * vector.
+ */
+std::vector<rocksdb::CompressionType> rocksdb_compression_vector_helper(
+    JNIEnv* env, jobject jcompressionLevels) {
+  std::vector<rocksdb::CompressionType> compressionLevels;
+  // iterate over compressionLevels
+  jobject iteratorObj = env->CallObjectMethod(
+        jcompressionLevels, rocksdb::ListJni::getIteratorMethod(env));
+  while (env->CallBooleanMethod(
+    iteratorObj, rocksdb::ListJni::getHasNextMethod(env)) == JNI_TRUE) {
+    // get compression
+    jobject jcompression_obj = env->CallObjectMethod(iteratorObj,
+        rocksdb::ListJni::getNextMethod(env));
+    jbyte jcompression = env->CallByteMethod(jcompression_obj,
+        rocksdb::ByteJni::getByteValueMethod(env));
+    compressionLevels.push_back(static_cast<rocksdb::CompressionType>(
+        jcompression));
+  }
+  return compressionLevels;
+}
+
+/*
+ * Helper method to convert a CompressionType vector to a Java
+ * List.
+ */
+jobject rocksdb_compression_list_helper(JNIEnv* env,
+    std::vector<rocksdb::CompressionType> compressionLevels) {
+  jclass jListClazz = env->FindClass("java/util/ArrayList");
+  jmethodID midList = rocksdb::ListJni::getArrayListConstructorMethodId(
+      env, jListClazz);
+  jobject jcompressionLevels = env->NewObject(jListClazz,
+    midList, compressionLevels.size());
+  // insert in java list
+  for (std::vector<rocksdb::CompressionType>::size_type i = 0;
+        i != compressionLevels.size(); i++) {
+    jclass jByteClazz = env->FindClass("java/lang/Byte");
+    jmethodID midByte = env->GetMethodID(jByteClazz, "<init>", "(B)V");
+    jobject obj = env->NewObject(jByteClazz, midByte,
+        compressionLevels[i]);
+    env->CallBooleanMethod(jcompressionLevels,
+        rocksdb::ListJni::getListAddMethodId(env), obj);
+  }
+  return jcompressionLevels;
+}
+
+/*
+ * Class:     org_rocksdb_Options
+ * Method:    setCompressionPerLevel
+ * Signature: (JLjava/util/List;)V
+ */
+void Java_org_rocksdb_Options_setCompressionPerLevel(
+    JNIEnv* env, jobject jobj, jlong jhandle,
+    jobject jcompressionLevels) {
+  auto* options = reinterpret_cast<rocksdb::Options*>(jhandle);
+  std::vector<rocksdb::CompressionType> compressionLevels =
+      rocksdb_compression_vector_helper(env, jcompressionLevels);
+  options->compression_per_level = compressionLevels;
+}
+
+/*
+ * Class:     org_rocksdb_Options
+ * Method:    compressionPerLevel
+ * Signature: (J)Ljava/util/List;
+ */
+jobject Java_org_rocksdb_Options_compressionPerLevel(
+    JNIEnv* env, jobject jobj, jlong jhandle) {
+  auto* options = reinterpret_cast<rocksdb::Options*>(jhandle);
+  return rocksdb_compression_list_helper(env,
+      options->compression_per_level);
+}
+
+
+/*
  * Class:     org_rocksdb_Options
  * Method:    setCompactionStyle
  * Signature: (JB)V
@@ -1243,6 +1340,30 @@ void Java_org_rocksdb_Options_setMaxBytesForLevelBase(
 
 /*
  * Class:     org_rocksdb_Options
+ * Method:    levelCompactionDynamicLevelBytes
+ * Signature: (J)Z
+ */
+jboolean Java_org_rocksdb_Options_levelCompactionDynamicLevelBytes(
+    JNIEnv* env, jobject jobj, jlong jhandle) {
+  return reinterpret_cast<rocksdb::Options*>(
+      jhandle)->level_compaction_dynamic_level_bytes;
+}
+
+/*
+ * Class:     org_rocksdb_Options
+ * Method:    setLevelCompactionDynamicLevelBytes
+ * Signature: (JZ)V
+ */
+void Java_org_rocksdb_Options_setLevelCompactionDynamicLevelBytes(
+    JNIEnv* env, jobject jobj, jlong jhandle,
+    jboolean jenable_dynamic_level_bytes) {
+  reinterpret_cast<rocksdb::Options*>(
+      jhandle)->level_compaction_dynamic_level_bytes =
+          (jenable_dynamic_level_bytes);
+}
+
+/*
+ * Class:     org_rocksdb_Options
  * Method:    maxBytesForLevelMultiplier
  * Signature: (J)I
  */
@@ -1425,7 +1546,7 @@ void Java_org_rocksdb_Options_setArenaBlockSize(
     reinterpret_cast<rocksdb::Options*>(jhandle)->arena_block_size =
         jarena_block_size;
   } else {
-    rocksdb::RocksDBExceptionJni::ThrowNew(env, s);
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
   }
 }
 
@@ -1595,7 +1716,7 @@ void Java_org_rocksdb_Options_setInplaceUpdateNumLocks(
     reinterpret_cast<rocksdb::Options*>(jhandle)->inplace_update_num_locks =
         jinplace_update_num_locks;
   } else {
-    rocksdb::RocksDBExceptionJni::ThrowNew(env, s);
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
   }
 }
 
@@ -1692,7 +1813,7 @@ void Java_org_rocksdb_Options_setMaxSuccessiveMerges(
     reinterpret_cast<rocksdb::Options*>(jhandle)->max_successive_merges =
         jmax_successive_merges;
   } else {
-    rocksdb::RocksDBExceptionJni::ThrowNew(env, s);
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
   }
 }
 
@@ -1718,6 +1839,30 @@ void Java_org_rocksdb_Options_setMinPartialMergeOperands(
   reinterpret_cast<rocksdb::Options*>(
       jhandle)->min_partial_merge_operands =
           static_cast<int32_t>(jmin_partial_merge_operands);
+}
+
+/*
+ * Class:     org_rocksdb_Options
+ * Method:    optimizeFiltersForHits
+ * Signature: (J)Z
+ */
+jboolean Java_org_rocksdb_Options_optimizeFiltersForHits(
+    JNIEnv* env, jobject jobj, jlong jhandle) {
+  return reinterpret_cast<rocksdb::Options*>(
+      jhandle)->optimize_filters_for_hits;
+}
+
+/*
+ * Class:     org_rocksdb_Options
+ * Method:    setOptimizeFiltersForHits
+ * Signature: (JZ)V
+ */
+void Java_org_rocksdb_Options_setOptimizeFiltersForHits(
+    JNIEnv* env, jobject jobj, jlong jhandle,
+    jboolean joptimize_filters_for_hits) {
+  reinterpret_cast<rocksdb::Options*>(
+      jhandle)->optimize_filters_for_hits =
+          static_cast<bool>(joptimize_filters_for_hits);
 }
 
 /*
@@ -1790,11 +1935,11 @@ jlong Java_org_rocksdb_ColumnFamilyOptions_getColumnFamilyOptionsFromProps(
   rocksdb::ColumnFamilyOptions* cf_options =
       new rocksdb::ColumnFamilyOptions();
   const char* opt_string = env->GetStringUTFChars(jopt_string, 0);
-  bool status = rocksdb::GetColumnFamilyOptionsFromString(
+  rocksdb::Status status = rocksdb::GetColumnFamilyOptionsFromString(
       rocksdb::ColumnFamilyOptions(), opt_string, cf_options);
   env->ReleaseStringUTFChars(jopt_string, opt_string);
   // Check if ColumnFamilyOptions creation was possible.
-  if (status) {
+  if (status.ok()) {
     ret_value = reinterpret_cast<jlong>(cf_options);
   } else {
     // if operation failed the ColumnFamilyOptions need to be deleted
@@ -1918,7 +2063,7 @@ void Java_org_rocksdb_ColumnFamilyOptions_setWriteBufferSize(
     reinterpret_cast<rocksdb::ColumnFamilyOptions*>(jhandle)->
         write_buffer_size = jwrite_buffer_size;
   } else {
-    rocksdb::RocksDBExceptionJni::ThrowNew(env, s);
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
   }
 }
 
@@ -2071,6 +2216,32 @@ jbyte Java_org_rocksdb_ColumnFamilyOptions_compressionType(
     JNIEnv* env, jobject jobj, jlong jhandle) {
   return reinterpret_cast<rocksdb::ColumnFamilyOptions*>(jhandle)->
       compression;
+}
+
+/*
+ * Class:     org_rocksdb_ColumnFamilyOptions
+ * Method:    setCompressionPerLevel
+ * Signature: (JLjava/util/List;)V
+ */
+void Java_org_rocksdb_ColumnFamilyOptions_setCompressionPerLevel(
+    JNIEnv* env, jobject jobj, jlong jhandle,
+    jobject jcompressionLevels) {
+  auto* options = reinterpret_cast<rocksdb::ColumnFamilyOptions*>(jhandle);
+  std::vector<rocksdb::CompressionType> compressionLevels =
+      rocksdb_compression_vector_helper(env, jcompressionLevels);
+  options->compression_per_level = compressionLevels;
+}
+
+/*
+ * Class:     org_rocksdb_ColumnFamilyOptions
+ * Method:    compressionPerLevel
+ * Signature: (J)Ljava/util/List;
+ */
+jobject Java_org_rocksdb_ColumnFamilyOptions_compressionPerLevel(
+    JNIEnv* env, jobject jobj, jlong jhandle) {
+  auto* options = reinterpret_cast<rocksdb::ColumnFamilyOptions*>(jhandle);
+  return rocksdb_compression_list_helper(env,
+      options->compression_per_level);
 }
 
 /*
@@ -2284,6 +2455,30 @@ void Java_org_rocksdb_ColumnFamilyOptions_setMaxBytesForLevelBase(
 
 /*
  * Class:     org_rocksdb_ColumnFamilyOptions
+ * Method:    levelCompactionDynamicLevelBytes
+ * Signature: (J)Z
+ */
+jboolean Java_org_rocksdb_ColumnFamilyOptions_levelCompactionDynamicLevelBytes(
+    JNIEnv* env, jobject jobj, jlong jhandle) {
+  return reinterpret_cast<rocksdb::ColumnFamilyOptions*>(
+      jhandle)->level_compaction_dynamic_level_bytes;
+}
+
+/*
+ * Class:     org_rocksdb_ColumnFamilyOptions
+ * Method:    setLevelCompactionDynamicLevelBytes
+ * Signature: (JZ)V
+ */
+void Java_org_rocksdb_ColumnFamilyOptions_setLevelCompactionDynamicLevelBytes(
+    JNIEnv* env, jobject jobj, jlong jhandle,
+    jboolean jenable_dynamic_level_bytes) {
+  reinterpret_cast<rocksdb::ColumnFamilyOptions*>(
+      jhandle)->level_compaction_dynamic_level_bytes =
+          (jenable_dynamic_level_bytes);
+}
+
+/*
+ * Class:     org_rocksdb_ColumnFamilyOptions
  * Method:    maxBytesForLevelMultiplier
  * Signature: (J)I
  */
@@ -2469,7 +2664,7 @@ void Java_org_rocksdb_ColumnFamilyOptions_setArenaBlockSize(
     reinterpret_cast<rocksdb::ColumnFamilyOptions*>(jhandle)->
         arena_block_size = jarena_block_size;
   } else {
-    rocksdb::RocksDBExceptionJni::ThrowNew(env, s);
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
   }
 }
 
@@ -2640,7 +2835,7 @@ void Java_org_rocksdb_ColumnFamilyOptions_setInplaceUpdateNumLocks(
     reinterpret_cast<rocksdb::ColumnFamilyOptions*>(jhandle)->
         inplace_update_num_locks = jinplace_update_num_locks;
   } else {
-    rocksdb::RocksDBExceptionJni::ThrowNew(env, s);
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
   }
 }
 
@@ -2739,7 +2934,7 @@ void Java_org_rocksdb_ColumnFamilyOptions_setMaxSuccessiveMerges(
     reinterpret_cast<rocksdb::ColumnFamilyOptions*>(jhandle)->
         max_successive_merges = jmax_successive_merges;
   } else {
-    rocksdb::RocksDBExceptionJni::ThrowNew(env, s);
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
   }
 }
 
@@ -2767,6 +2962,30 @@ void Java_org_rocksdb_ColumnFamilyOptions_setMinPartialMergeOperands(
           static_cast<int32_t>(jmin_partial_merge_operands);
 }
 
+/*
+ * Class:     org_rocksdb_ColumnFamilyOptions
+ * Method:    optimizeFiltersForHits
+ * Signature: (J)Z
+ */
+jboolean Java_org_rocksdb_ColumnFamilyOptions_optimizeFiltersForHits(
+    JNIEnv* env, jobject jobj, jlong jhandle) {
+  return reinterpret_cast<rocksdb::ColumnFamilyOptions*>(
+      jhandle)->optimize_filters_for_hits;
+}
+
+/*
+ * Class:     org_rocksdb_ColumnFamilyOptions
+ * Method:    setOptimizeFiltersForHits
+ * Signature: (JZ)V
+ */
+void Java_org_rocksdb_ColumnFamilyOptions_setOptimizeFiltersForHits(
+    JNIEnv* env, jobject jobj, jlong jhandle,
+    jboolean joptimize_filters_for_hits) {
+  reinterpret_cast<rocksdb::ColumnFamilyOptions*>(
+      jhandle)->optimize_filters_for_hits =
+          static_cast<bool>(joptimize_filters_for_hits);
+}
+
 /////////////////////////////////////////////////////////////////////
 // rocksdb::DBOptions
 
@@ -2792,11 +3011,11 @@ jlong Java_org_rocksdb_DBOptions_getDBOptionsFromProps(
   rocksdb::DBOptions* db_options =
       new rocksdb::DBOptions();
   const char* opt_string = env->GetStringUTFChars(jopt_string, 0);
-  bool status = rocksdb::GetDBOptionsFromString(
+  rocksdb::Status status = rocksdb::GetDBOptionsFromString(
       rocksdb::DBOptions(), opt_string, db_options);
   env->ReleaseStringUTFChars(jopt_string, opt_string);
   // Check if DBOptions creation was possible.
-  if (status) {
+  if (status.ok()) {
     ret_value = reinterpret_cast<jlong>(db_options);
   } else {
     // if operation failed the DBOptions need to be deleted
@@ -2815,6 +3034,18 @@ void Java_org_rocksdb_DBOptions_disposeInternal(
     JNIEnv* env, jobject jobj, jlong handle) {
   delete reinterpret_cast<rocksdb::DBOptions*>(handle);
 }
+
+/*
+ * Class:     org_rocksdb_DBOptions
+ * Method:    setIncreaseParallelism
+ * Signature: (JI)V
+ */
+void Java_org_rocksdb_DBOptions_setIncreaseParallelism(
+    JNIEnv * env, jobject jobj, jlong jhandle, jint totalThreads) {
+  reinterpret_cast<rocksdb::DBOptions*>
+      (jhandle)->IncreaseParallelism(static_cast<int>(totalThreads));
+}
+
 
 /*
  * Class:     org_rocksdb_DBOptions
@@ -2910,6 +3141,19 @@ void Java_org_rocksdb_DBOptions_setRateLimiter(
     JNIEnv* env, jobject jobj, jlong jhandle, jlong jrate_limiter_handle) {
   reinterpret_cast<rocksdb::DBOptions*>(jhandle)->rate_limiter.reset(
       reinterpret_cast<rocksdb::RateLimiter*>(jrate_limiter_handle));
+}
+
+/*
+ * Class:     org_rocksdb_DBOptions
+ * Method:    setLogger
+ * Signature: (JJ)V
+ */
+void Java_org_rocksdb_DBOptions_setLogger(
+    JNIEnv* env, jobject jobj, jlong jhandle, jlong jlogger_handle) {
+  std::shared_ptr<rocksdb::LoggerJniCallback> *pLogger =
+      reinterpret_cast<std::shared_ptr<rocksdb::LoggerJniCallback> *>(
+          jlogger_handle);
+  reinterpret_cast<rocksdb::DBOptions*>(jhandle)->info_log = *pLogger;
 }
 
 /*
@@ -3168,7 +3412,7 @@ void Java_org_rocksdb_DBOptions_setMaxLogFileSize(
     reinterpret_cast<rocksdb::DBOptions*>(jhandle)->max_log_file_size =
         max_log_file_size;
   } else {
-    rocksdb::RocksDBExceptionJni::ThrowNew(env, s);
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
   }
 }
 
@@ -3195,7 +3439,7 @@ void Java_org_rocksdb_DBOptions_setLogFileTimeToRoll(
     reinterpret_cast<rocksdb::DBOptions*>(jhandle)->log_file_time_to_roll =
         log_file_time_to_roll;
   } else {
-    rocksdb::RocksDBExceptionJni::ThrowNew(env, s);
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
   }
 }
 
@@ -3221,7 +3465,7 @@ void Java_org_rocksdb_DBOptions_setKeepLogFileNum(
     reinterpret_cast<rocksdb::DBOptions*>(jhandle)->keep_log_file_num =
         keep_log_file_num;
   } else {
-    rocksdb::RocksDBExceptionJni::ThrowNew(env, s);
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
   }
 }
 
@@ -3286,8 +3530,7 @@ jint Java_org_rocksdb_DBOptions_tableCacheNumshardbits(
  */
 void Java_org_rocksdb_DBOptions_setTableCacheRemoveScanCountLimit(
     JNIEnv* env, jobject jobj, jlong jhandle, jint limit) {
-  reinterpret_cast<rocksdb::DBOptions*>(
-      jhandle)->table_cache_remove_scan_count_limit = static_cast<int>(limit);
+  // deprecated
 }
 
 /*
@@ -3297,8 +3540,8 @@ void Java_org_rocksdb_DBOptions_setTableCacheRemoveScanCountLimit(
  */
 jint Java_org_rocksdb_DBOptions_tableCacheRemoveScanCountLimit(
     JNIEnv* env, jobject jobj, jlong jhandle) {
-  return reinterpret_cast<rocksdb::DBOptions*>(
-      jhandle)->table_cache_remove_scan_count_limit;
+  // deprecated
+  return 0;
 }
 
 /*
@@ -3355,7 +3598,7 @@ void Java_org_rocksdb_DBOptions_setManifestPreallocationSize(
     reinterpret_cast<rocksdb::DBOptions*>(jhandle)->
         manifest_preallocation_size = preallocation_size;
   } else {
-    rocksdb::RocksDBExceptionJni::ThrowNew(env, s);
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
   }
 }
 

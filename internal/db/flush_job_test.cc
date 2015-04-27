@@ -11,6 +11,7 @@
 #include "db/version_set.h"
 #include "db/writebuffer.h"
 #include "rocksdb/cache.h"
+#include "util/string_util.h"
 #include "util/testharness.h"
 #include "util/testutil.h"
 #include "table/mock_table.h"
@@ -20,19 +21,19 @@ namespace rocksdb {
 // TODO(icanadi) Mock out everything else:
 // 1. VersionSet
 // 2. Memtable
-class FlushJobTest {
+class FlushJobTest : public testing::Test {
  public:
   FlushJobTest()
       : env_(Env::Default()),
         dbname_(test::TmpDir() + "/flush_job_test"),
-        table_cache_(NewLRUCache(50000, 16, 8)),
+        table_cache_(NewLRUCache(50000, 16)),
         write_buffer_(db_options_.db_write_buffer_size),
         versions_(new VersionSet(dbname_, &db_options_, env_options_,
                                  table_cache_.get(), &write_buffer_,
                                  &write_controller_)),
         shutting_down_(false),
         mock_table_factory_(new mock::MockTableFactory()) {
-    ASSERT_OK(env_->CreateDirIfMissing(dbname_));
+    EXPECT_OK(env_->CreateDirIfMissing(dbname_));
     db_options_.db_paths.emplace_back(dbname_,
                                       std::numeric_limits<uint64_t>::max());
     // TODO(icanadi) Remove this once we mock out VersionSet
@@ -41,7 +42,7 @@ class FlushJobTest {
     cf_options_.table_factory = mock_table_factory_;
     column_families.emplace_back(kDefaultColumnFamilyName, cf_options_);
 
-    ASSERT_OK(versions_->Recover(column_families, false));
+    EXPECT_OK(versions_->Recover(column_families, false));
   }
 
   void NewDB() {
@@ -75,25 +76,26 @@ class FlushJobTest {
   WriteBuffer write_buffer_;
   ColumnFamilyOptions cf_options_;
   std::unique_ptr<VersionSet> versions_;
-  port::Mutex mutex_;
+  InstrumentedMutex mutex_;
   std::atomic<bool> shutting_down_;
   std::shared_ptr<mock::MockTableFactory> mock_table_factory_;
 };
 
-TEST(FlushJobTest, Empty) {
-  JobContext job_context;
+TEST_F(FlushJobTest, Empty) {
+  JobContext job_context(0);
   auto cfd = versions_->GetColumnFamilySet()->GetDefault();
+  EventLogger event_logger(db_options_.info_log.get());
   FlushJob flush_job(dbname_, versions_->GetColumnFamilySet()->GetDefault(),
                      db_options_, *cfd->GetLatestMutableCFOptions(),
                      env_options_, versions_.get(), &mutex_, &shutting_down_,
-                     SequenceNumber(), &job_context, nullptr, nullptr,
-                     kNoCompression, nullptr);
+                     SequenceNumber(), &job_context, nullptr, nullptr, nullptr,
+                     kNoCompression, nullptr, &event_logger);
   ASSERT_OK(flush_job.Run());
   job_context.Clean();
 }
 
-TEST(FlushJobTest, NonEmpty) {
-  JobContext job_context;
+TEST_F(FlushJobTest, NonEmpty) {
+  JobContext job_context(0);
   auto cfd = versions_->GetColumnFamilySet()->GetDefault();
   auto new_mem = cfd->ConstructNewMemtable(*cfd->GetLatestMutableCFOptions());
   new_mem->Ref();
@@ -107,11 +109,12 @@ TEST(FlushJobTest, NonEmpty) {
   }
   cfd->imm()->Add(new_mem);
 
+  EventLogger event_logger(db_options_.info_log.get());
   FlushJob flush_job(dbname_, versions_->GetColumnFamilySet()->GetDefault(),
                      db_options_, *cfd->GetLatestMutableCFOptions(),
                      env_options_, versions_.get(), &mutex_, &shutting_down_,
-                     SequenceNumber(), &job_context, nullptr, nullptr,
-                     kNoCompression, nullptr);
+                     SequenceNumber(), &job_context, nullptr, nullptr, nullptr,
+                     kNoCompression, nullptr, &event_logger);
   mutex_.Lock();
   ASSERT_OK(flush_job.Run());
   mutex_.Unlock();
@@ -121,4 +124,7 @@ TEST(FlushJobTest, NonEmpty) {
 
 }  // namespace rocksdb
 
-int main(int argc, char** argv) { return rocksdb::test::RunAllTests(); }
+int main(int argc, char** argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
+}

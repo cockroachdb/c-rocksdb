@@ -65,16 +65,19 @@ MemTable::MemTable(const InternalKeyComparator& cmp,
           comparator_, &allocator_, ioptions.prefix_extractor,
           ioptions.info_log)),
       num_entries_(0),
+      num_deletes_(0),
       flush_in_progress_(false),
       flush_completed_(false),
       file_number_(0),
       first_seqno_(0),
       mem_next_logfile_number_(0),
-      locks_(moptions_.inplace_update_support ?
-             moptions_.inplace_update_num_locks : 0),
+      locks_(moptions_.inplace_update_support
+                 ? moptions_.inplace_update_num_locks
+                 : 0),
       prefix_extractor_(ioptions.prefix_extractor),
       should_flush_(ShouldFlushNow()),
-      flush_scheduled_(false) {
+      flush_scheduled_(false),
+      env_(ioptions.env) {
   // if should_flush_ == true without an entry inserted, something must have
   // gone wrong already.
   assert(!should_flush_);
@@ -221,8 +224,10 @@ class MemTableIterator: public Iterator {
     }
   }
 
-  virtual bool Valid() const { return valid_; }
-  virtual void Seek(const Slice& k) {
+  virtual bool Valid() const override { return valid_; }
+  virtual void Seek(const Slice& k) override {
+    PERF_TIMER_GUARD(seek_on_memtable_time);
+    PERF_COUNTER_ADD(seek_on_memtable_count, 1);
     if (bloom_ != nullptr &&
         !bloom_->MayContain(prefix_extractor_->Transform(ExtractUserKey(k)))) {
       valid_ = false;
@@ -231,35 +236,35 @@ class MemTableIterator: public Iterator {
     iter_->Seek(k, nullptr);
     valid_ = iter_->Valid();
   }
-  virtual void SeekToFirst() {
+  virtual void SeekToFirst() override {
     iter_->SeekToFirst();
     valid_ = iter_->Valid();
   }
-  virtual void SeekToLast() {
+  virtual void SeekToLast() override {
     iter_->SeekToLast();
     valid_ = iter_->Valid();
   }
-  virtual void Next() {
+  virtual void Next() override {
     assert(Valid());
     iter_->Next();
     valid_ = iter_->Valid();
   }
-  virtual void Prev() {
+  virtual void Prev() override {
     assert(Valid());
     iter_->Prev();
     valid_ = iter_->Valid();
   }
-  virtual Slice key() const {
+  virtual Slice key() const override {
     assert(Valid());
     return GetLengthPrefixedSlice(iter_->key());
   }
-  virtual Slice value() const {
+  virtual Slice value() const override {
     assert(Valid());
     Slice key_slice = GetLengthPrefixedSlice(iter_->key());
     return GetLengthPrefixedSlice(key_slice.data() + key_slice.size());
   }
 
-  virtual Status status() const { return Status::OK(); }
+  virtual Status status() const override { return Status::OK(); }
 
  private:
   DynamicBloom* bloom_;
@@ -311,6 +316,9 @@ void MemTable::Add(SequenceNumber s, ValueType type,
   assert((unsigned)(p + val_size - buf) == (unsigned)encoded_len);
   table_->Insert(handle);
   num_entries_++;
+  if (type == kTypeDeletion) {
+    num_deletes_++;
+  }
 
   if (prefix_bloom_) {
     assert(prefix_extractor_);
@@ -342,6 +350,7 @@ struct Saver {
   Logger* logger;
   Statistics* statistics;
   bool inplace_update_support;
+  Env* env_;
 };
 }  // namespace
 
@@ -376,9 +385,17 @@ static bool SaveValue(void* arg, const char* entry) {
         *(s->status) = Status::OK();
         if (*(s->merge_in_progress)) {
           assert(merge_operator);
-          if (!merge_operator->FullMerge(s->key->user_key(), &v,
-                                         merge_context->GetOperands(), s->value,
-                                         s->logger)) {
+          bool merge_success = false;
+          {
+            StopWatchNano timer(s->env_, s->statistics != nullptr);
+            PERF_TIMER_GUARD(merge_operator_time_nanos);
+            merge_success = merge_operator->FullMerge(
+                s->key->user_key(), &v, merge_context->GetOperands(), s->value,
+                s->logger);
+            RecordTick(s->statistics, MERGE_OPERATION_TOTAL_TIME,
+                       timer.ElapsedNanos());
+          }
+          if (!merge_success) {
             RecordTick(s->statistics, NUMBER_MERGE_FAILURES);
             *(s->status) =
                 Status::Corruption("Error: Could not perform merge.");
@@ -396,9 +413,17 @@ static bool SaveValue(void* arg, const char* entry) {
         if (*(s->merge_in_progress)) {
           assert(merge_operator);
           *(s->status) = Status::OK();
-          if (!merge_operator->FullMerge(s->key->user_key(), nullptr,
-                                         merge_context->GetOperands(), s->value,
-                                         s->logger)) {
+          bool merge_success = false;
+          {
+            StopWatchNano timer(s->env_, s->statistics != nullptr);
+            PERF_TIMER_GUARD(merge_operator_time_nanos);
+            merge_success = merge_operator->FullMerge(
+                s->key->user_key(), nullptr, merge_context->GetOperands(),
+                s->value, s->logger);
+            RecordTick(s->statistics, MERGE_OPERATION_TOTAL_TIME,
+                       timer.ElapsedNanos());
+          }
+          if (!merge_success) {
             RecordTick(s->statistics, NUMBER_MERGE_FAILURES);
             *(s->status) =
                 Status::Corruption("Error: Could not perform merge.");
@@ -465,6 +490,7 @@ bool MemTable::Get(const LookupKey& key, std::string* value, Status* s,
     saver.logger = moptions_.info_log;
     saver.inplace_update_support = moptions_.inplace_update_support;
     saver.statistics = moptions_.statistics;
+    saver.env_ = env_;
     table_->Get(key, &saver, SaveValue);
   }
 

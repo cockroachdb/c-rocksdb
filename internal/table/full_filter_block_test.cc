@@ -62,18 +62,18 @@ class TestFilterBitsReader : public FilterBitsReader {
 
 class TestHashFilter : public FilterPolicy {
  public:
-  virtual const char* Name() const {
-    return "TestHashFilter";
-  }
+  virtual const char* Name() const override { return "TestHashFilter"; }
 
-  virtual void CreateFilter(const Slice* keys, int n, std::string* dst) const {
+  virtual void CreateFilter(const Slice* keys, int n,
+                            std::string* dst) const override {
     for (int i = 0; i < n; i++) {
       uint32_t h = Hash(keys[i].data(), keys[i].size(), 1);
       PutFixed32(dst, h);
     }
   }
 
-  virtual bool KeyMayMatch(const Slice& key, const Slice& filter) const {
+  virtual bool KeyMayMatch(const Slice& key,
+                           const Slice& filter) const override {
     uint32_t h = Hash(key.data(), key.size(), 1);
     for (unsigned int i = 0; i + 4 <= filter.size(); i += 4) {
       if (h == DecodeFixed32(filter.data() + i)) {
@@ -93,7 +93,7 @@ class TestHashFilter : public FilterPolicy {
   }
 };
 
-class PluginFullFilterBlockTest {
+class PluginFullFilterBlockTest : public testing::Test {
  public:
   BlockBasedTableOptions table_options_;
 
@@ -102,28 +102,30 @@ class PluginFullFilterBlockTest {
   }
 };
 
-TEST(PluginFullFilterBlockTest, PluginEmptyBuilder) {
-  FullFilterBlockBuilder builder(nullptr, table_options_,
-      table_options_.filter_policy->GetFilterBitsBuilder());
+TEST_F(PluginFullFilterBlockTest, PluginEmptyBuilder) {
+  FullFilterBlockBuilder builder(
+      nullptr, true, table_options_.filter_policy->GetFilterBitsBuilder());
   Slice block = builder.Finish();
   ASSERT_EQ("", EscapeString(block));
 
-  FullFilterBlockReader reader(nullptr, table_options_, block,
+  FullFilterBlockReader reader(
+      nullptr, true, block,
       table_options_.filter_policy->GetFilterBitsReader(block));
   // Remain same symantic with blockbased filter
   ASSERT_TRUE(reader.KeyMayMatch("foo"));
 }
 
-TEST(PluginFullFilterBlockTest, PluginSingleChunk) {
-  FullFilterBlockBuilder builder(nullptr, table_options_,
-      table_options_.filter_policy->GetFilterBitsBuilder());
+TEST_F(PluginFullFilterBlockTest, PluginSingleChunk) {
+  FullFilterBlockBuilder builder(
+      nullptr, true, table_options_.filter_policy->GetFilterBitsBuilder());
   builder.Add("foo");
   builder.Add("bar");
   builder.Add("box");
   builder.Add("box");
   builder.Add("hello");
   Slice block = builder.Finish();
-  FullFilterBlockReader reader(nullptr, table_options_, block,
+  FullFilterBlockReader reader(
+      nullptr, true, block,
       table_options_.filter_policy->GetFilterBitsReader(block));
   ASSERT_TRUE(reader.KeyMayMatch("foo"));
   ASSERT_TRUE(reader.KeyMayMatch("bar"));
@@ -134,7 +136,7 @@ TEST(PluginFullFilterBlockTest, PluginSingleChunk) {
   ASSERT_TRUE(!reader.KeyMayMatch("other"));
 }
 
-class FullFilterBlockTest {
+class FullFilterBlockTest : public testing::Test {
  public:
   BlockBasedTableOptions table_options_;
 
@@ -145,28 +147,30 @@ class FullFilterBlockTest {
   ~FullFilterBlockTest() {}
 };
 
-TEST(FullFilterBlockTest, EmptyBuilder) {
-  FullFilterBlockBuilder builder(nullptr, table_options_,
-      table_options_.filter_policy->GetFilterBitsBuilder());
+TEST_F(FullFilterBlockTest, EmptyBuilder) {
+  FullFilterBlockBuilder builder(
+      nullptr, true, table_options_.filter_policy->GetFilterBitsBuilder());
   Slice block = builder.Finish();
   ASSERT_EQ("", EscapeString(block));
 
-  FullFilterBlockReader reader(nullptr, table_options_, block,
+  FullFilterBlockReader reader(
+      nullptr, true, block,
       table_options_.filter_policy->GetFilterBitsReader(block));
   // Remain same symantic with blockbased filter
   ASSERT_TRUE(reader.KeyMayMatch("foo"));
 }
 
-TEST(FullFilterBlockTest, SingleChunk) {
-  FullFilterBlockBuilder builder(nullptr, table_options_,
-      table_options_.filter_policy->GetFilterBitsBuilder());
+TEST_F(FullFilterBlockTest, SingleChunk) {
+  FullFilterBlockBuilder builder(
+      nullptr, true, table_options_.filter_policy->GetFilterBitsBuilder());
   builder.Add("foo");
   builder.Add("bar");
   builder.Add("box");
   builder.Add("box");
   builder.Add("hello");
   Slice block = builder.Finish();
-  FullFilterBlockReader reader(nullptr, table_options_, block,
+  FullFilterBlockReader reader(
+      nullptr, true, block,
       table_options_.filter_policy->GetFilterBitsReader(block));
   ASSERT_TRUE(reader.KeyMayMatch("foo"));
   ASSERT_TRUE(reader.KeyMayMatch("bar"));
@@ -179,4 +183,7 @@ TEST(FullFilterBlockTest, SingleChunk) {
 
 }  // namespace rocksdb
 
-int main(int argc, char** argv) { return rocksdb::test::RunAllTests(); }
+int main(int argc, char** argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
+}
