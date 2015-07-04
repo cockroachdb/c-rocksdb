@@ -5,7 +5,7 @@ package rocksdb
 
 // #cgo CPPFLAGS: -Iinternal -Iinternal/include -Iinternal/db -Iinternal/util
 // #cgo CPPFLAGS: -Iinternal/utilities/merge_operators/string_append
-// #cgo CPPFLAGS: -I../c-snappy/internal -I../c-lz4/internal/lib
+// #cgo CPPFLAGS: -I../../cockroachdb/c-snappy/internal -I../../cockroachdb/c-lz4/internal/lib
 // #cgo CPPFLAGS: -DROCKSDB_PLATFORM_POSIX -DNDEBUG -DSNAPPY -DLZ4
 // #cgo darwin CPPFLAGS: -DOS_MACOSX
 // #cgo linux CPPFLAGS: -DOS_LINUX
