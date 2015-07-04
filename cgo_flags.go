@@ -3,6 +3,11 @@
 // compiled in.
 package rocksdb
 
+import (
+	_ "github.com/cockroachdb/c-lz4"
+	_ "github.com/cockroachdb/c-snappy"
+)
+
 // #cgo CPPFLAGS: -Iinternal -Iinternal/include -Iinternal/db -Iinternal/util
 // #cgo CPPFLAGS: -Iinternal/utilities/merge_operators/string_append
 // #cgo CPPFLAGS: -I../../cockroachdb/c-snappy/internal -I../../cockroachdb/c-lz4/internal/lib
