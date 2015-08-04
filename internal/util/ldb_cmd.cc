@@ -17,9 +17,11 @@
 #include "rocksdb/table_properties.h"
 #include "util/coding.h"
 #include "util/sst_dump_tool_imp.h"
+#include "util/string_util.h"
 #include "util/scoped_arena_iterator.h"
 #include "utilities/ttl/db_ttl_impl.h"
 
+#include <cstdlib>
 #include <ctime>
 #include <dirent.h>
 #include <limits>
@@ -192,7 +194,11 @@ bool LDBCommand::ParseIntOption(const map<string, string>& options,
   map<string, string>::const_iterator itr = option_map_.find(option);
   if (itr != option_map_.end()) {
     try {
+#if defined(CYGWIN)
+      value = strtol(itr->second.c_str(), 0, 10);
+#else
       value = stoi(itr->second);
+#endif
       return true;
     } catch(const invalid_argument&) {
       exec_state =
@@ -796,7 +802,8 @@ void InternalDumpCommand::DoCommand() {
   }
 
   if (has_from_) {
-    InternalKey ikey(from_, kMaxSequenceNumber, kValueTypeForSeek);
+    InternalKey ikey;
+    ikey.SetMaxPossibleForUserKey(from_);
     iter->Seek(ikey.Encode());
   } else {
     iter->SeekToFirst();
@@ -896,7 +903,11 @@ DBDumperCommand::DBDumperCommand(const vector<string>& params,
   itr = options.find(ARG_MAX_KEYS);
   if (itr != options.end()) {
     try {
+#if defined(CYGWIN)
+      max_keys_ = strtol(itr->second.c_str(), 0, 10);
+#else
       max_keys_ = stoi(itr->second);
+#endif
     } catch(const invalid_argument&) {
       exec_state_ = LDBCommandExecuteResult::Failed(ARG_MAX_KEYS +
                                                     " has an invalid value");
@@ -1084,7 +1095,7 @@ ReduceDBLevelsCommand::ReduceDBLevelsCommand(const vector<string>& params,
       const map<string, string>& options, const vector<string>& flags) :
     LDBCommand(options, flags, false,
                BuildCmdLineOptions({ARG_NEW_LEVELS, ARG_PRINT_OLD_LEVELS})),
-    old_levels_(1 << 16),
+    old_levels_(1 << 7),
     new_levels_(-1),
     print_old_levels_(false) {
 
@@ -1103,7 +1114,7 @@ vector<string> ReduceDBLevelsCommand::PrepareArgs(const string& db_path,
   vector<string> ret;
   ret.push_back("reduce_levels");
   ret.push_back("--" + ARG_DB + "=" + db_path);
-  ret.push_back("--" + ARG_NEW_LEVELS + "=" + to_string(new_levels));
+  ret.push_back("--" + ARG_NEW_LEVELS + "=" + rocksdb::ToString(new_levels));
   if(print_old_level) {
     ret.push_back("--" + ARG_PRINT_OLD_LEVELS);
   }
@@ -1655,7 +1666,11 @@ ScanCommand::ScanCommand(const vector<string>& params,
   itr = options.find(ARG_MAX_KEYS);
   if (itr != options.end()) {
     try {
+#if defined(CYGWIN)
+      max_keys_scanned_ = strtol(itr->second.c_str(), 0, 10);
+#else
       max_keys_scanned_ = stoi(itr->second);
+#endif
     } catch(const invalid_argument&) {
       exec_state_ = LDBCommandExecuteResult::Failed(ARG_MAX_KEYS +
                                                     " has an invalid value");

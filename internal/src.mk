@@ -11,7 +11,10 @@ LIB_SOURCES =                                                   \
   db/db_impl.cc                                                 \
   db/db_impl_debug.cc                                           \
   db/db_impl_readonly.cc                                        \
+  db/db_impl_experimental.cc                                    \
   db/db_iter.cc                                                 \
+  db/experimental.cc                                            \
+  db/event_logger_helpers.cc                                    \
   db/file_indexer.cc                                            \
   db/filename.cc                                                \
   db/flush_job.cc                                               \
@@ -97,6 +100,7 @@ LIB_SOURCES =                                                   \
   utilities/document/document_db.cc                             \
   utilities/document/json_document_builder.cc                   \
   utilities/document/json_document.cc                           \
+  utilities/flashcache/flashcache.cc                            \
   utilities/geodb/geodb_impl.cc                                 \
   utilities/leveldb_options/leveldb_options.cc                  \
   utilities/merge_operators/put.cc                              \
@@ -107,6 +111,7 @@ LIB_SOURCES =                                                   \
   utilities/spatialdb/spatial_db.cc                             \
   utilities/ttl/db_ttl_impl.cc                                  \
   utilities/write_batch_with_index/write_batch_with_index.cc    \
+  utilities/write_batch_with_index/write_batch_with_index_internal.cc    \
   util/event_logger.cc                                          \
   util/ldb_cmd.cc                                               \
   util/ldb_tool.cc                                              \
@@ -215,7 +220,6 @@ TEST_BENCH_SOURCES =                                                    \
   util/options_test.cc                                                  \
   util/event_logger_test.cc                                             \
   util/rate_limiter_test.cc                                             \
-  util/signal_test.cc                                                   \
   util/slice_transform_test.cc                                          \
   util/sst_dump_test.cc                                                 \
   util/testharness.cc                                                   \
@@ -223,10 +227,43 @@ TEST_BENCH_SOURCES =                                                    \
   util/thread_list_test.cc                                              \
   util/thread_local_test.cc
 
+JNI_NATIVE_SOURCES =                                          \
+  java/rocksjni/backupablejni.cc                              \
+  java/rocksjni/checkpoint.cc                                 \
+  java/rocksjni/columnfamilyhandle.cc                         \
+  java/rocksjni/comparator.cc                                 \
+  java/rocksjni/comparatorjnicallback.cc                      \
+  java/rocksjni/env.cc                                        \
+  java/rocksjni/filter.cc                                     \
+  java/rocksjni/iterator.cc                                   \
+  java/rocksjni/loggerjnicallback.cc                          \
+  java/rocksjni/memtablejni.cc                                \
+  java/rocksjni/merge_operator.cc                             \
+  java/rocksjni/options.cc                                    \
+  java/rocksjni/ratelimiterjni.cc                             \
+  java/rocksjni/restorejni.cc                                 \
+  java/rocksjni/rocksjni.cc                                   \
+  java/rocksjni/slice.cc                                      \
+  java/rocksjni/snapshot.cc                                   \
+  java/rocksjni/statistics.cc                                 \
+  java/rocksjni/table.cc                                      \
+  java/rocksjni/transaction_log.cc                            \
+  java/rocksjni/ttl.cc                                        \
+  java/rocksjni/write_batch.cc                                \
+  java/rocksjni/writebatchhandlerjnicallback.cc               \
+  java/rocksjni/write_batch_test.cc                           \
+  java/rocksjni/write_batch_with_index.cc
+
 # Currently, we do not generate dependencies for
 # java/rocksjni/write_batch_test.cc, because its dependent,
 # java/include/org_rocksdb_WriteBatch.h is generated.
 # TODO/FIXME: fix the above.  Otherwise, the current rules would fail:
 #   java/rocksjni/write_batch_test.cc:13:44: fatal error: include/org_rocksdb_WriteBatch.h: No such file or directory
 #    #include "include/org_rocksdb_WriteBatch.h"
-#                                               ^
+
+# These are the xfunc tests run :
+XFUNC_TESTS =                                                   \
+  "managed_new"                                                 \
+  "managed_xftest_dropold"                                      \
+  "managed_xftest_release"                                      \
+  "inplace_lock_test"

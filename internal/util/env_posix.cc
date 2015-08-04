@@ -66,7 +66,7 @@
 
 // For non linux platform, the following macros are used only as place
 // holder.
-#ifndef OS_LINUX
+#if !(defined OS_LINUX) && !(defined CYGWIN)
 #define POSIX_FADV_NORMAL 0 /* [MC1] no further special treatment */
 #define POSIX_FADV_RANDOM 1 /* [MC1] expect random page refs */
 #define POSIX_FADV_SEQUENTIAL 2 /* [MC1] expect sequential page refs */
@@ -186,7 +186,11 @@ class PosixSequentialFile: public SequentialFile {
     Status s;
     size_t r = 0;
     do {
+#ifndef CYGWIN
       r = fread_unlocked(scratch, 1, n, file_);
+#else
+      r = fread(scratch, 1, n, file_);
+#endif
     } while (r == 0 && ferror(file_) && errno == EINTR);
     IOSTATS_ADD(bytes_read, r);
     *result = Slice(scratch, r);
@@ -1506,9 +1510,11 @@ class PosixEnv : public Env {
     return dummy;
   }
 
-  EnvOptions OptimizeForLogWrite(const EnvOptions& env_options) const override {
+  EnvOptions OptimizeForLogWrite(const EnvOptions& env_options,
+                                 const DBOptions& db_options) const override {
     EnvOptions optimized = env_options;
     optimized.use_mmap_writes = false;
+    optimized.bytes_per_sync = db_options.wal_bytes_per_sync;
     // TODO(icanadi) it's faster if fallocate_with_keep_size is false, but it
     // breaks TransactionLogIteratorStallAtLastRecord unit test. Fix the unit
     // test and make this false

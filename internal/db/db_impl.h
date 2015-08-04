@@ -150,6 +150,8 @@ class DBImpl : public DB {
   using DB::GetOptions;
   virtual const Options& GetOptions(
       ColumnFamilyHandle* column_family) const override;
+  using DB::GetDBOptions;
+  virtual const DBOptions& GetDBOptions() const override;
   using DB::Flush;
   virtual Status Flush(const FlushOptions& options,
                        ColumnFamilyHandle* column_family) override;
@@ -182,6 +184,12 @@ class DBImpl : public DB {
   virtual void GetColumnFamilyMetaData(
       ColumnFamilyHandle* column_family,
       ColumnFamilyMetaData* metadata) override;
+
+  // experimental API
+  Status SuggestCompactRange(ColumnFamilyHandle* column_family,
+                             const Slice* begin, const Slice* end);
+
+  Status PromoteL0(ColumnFamilyHandle* column_family, int target_level);
 
 #endif  // ROCKSDB_LITE
 
@@ -243,9 +251,11 @@ class DBImpl : public DB {
   // pass the pointer that you got from TEST_BeginWrite()
   void TEST_EndWrite(void* w);
 
-  uint64_t TEST_max_total_in_memory_state() {
+  uint64_t TEST_MaxTotalInMemoryState() const {
     return max_total_in_memory_state_;
   }
+
+  size_t TEST_LogsToFreeSize();
 
 #endif  // ROCKSDB_LITE
 
@@ -267,7 +277,7 @@ class DBImpl : public DB {
 
   const SnapshotList& snapshots() const { return snapshots_; }
 
-  void CancelAllBackgroundWork();
+  void CancelAllBackgroundWork(bool wait);
 
  protected:
   Env* const env_;
@@ -352,8 +362,8 @@ class DBImpl : public DB {
   // database is opened) and is heavyweight because it holds the mutex
   // for the entire period. The second method WriteLevel0Table supports
   // concurrent flush memtables to storage.
-  Status WriteLevel0TableForRecovery(ColumnFamilyData* cfd, MemTable* mem,
-                                     VersionEdit* edit);
+  Status WriteLevel0TableForRecovery(int job_id, ColumnFamilyData* cfd,
+                                     MemTable* mem, VersionEdit* edit);
   Status DelayWrite(uint64_t expiration_time);
 
   Status ScheduleFlushes(WriteContext* context);
@@ -461,6 +471,9 @@ class DBImpl : public DB {
   // If true, we have only one (default) column family. We use this to optimize
   // some code-paths
   bool single_column_family_mode_;
+  // If this is non-empty, we need to delete these log files in background
+  // threads. Protected by db mutex.
+  autovector<log::Writer*> logs_to_free_;
 
   bool is_snapshot_supported_;
 

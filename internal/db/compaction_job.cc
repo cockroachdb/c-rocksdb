@@ -22,6 +22,7 @@
 #include "db/builder.h"
 #include "db/db_iter.h"
 #include "db/dbformat.h"
+#include "db/event_logger_helpers.h"
 #include "db/filename.h"
 #include "db/log_reader.h"
 #include "db/log_writer.h"
@@ -49,6 +50,7 @@
 #include "util/perf_context_imp.h"
 #include "util/iostats_context_imp.h"
 #include "util/stop_watch.h"
+#include "util/string_util.h"
 #include "util/sync_point.h"
 #include "util/thread_status_util.h"
 
@@ -56,12 +58,6 @@ namespace rocksdb {
 
 struct CompactionJob::CompactionState {
   Compaction* const compaction;
-
-  // If there were two snapshots with seq numbers s1 and
-  // s2 and s1 < s2, and if we find two instances of a key k1 then lies
-  // entirely within s1 and s2, then the earlier version of k1 can be safely
-  // deleted because that version is not visible in any snapshot.
-  std::vector<SequenceNumber> existing_snapshots;
 
   // Files produced by compaction
   struct Output {
@@ -203,17 +199,17 @@ struct CompactionJob::CompactionState {
 
 CompactionJob::CompactionJob(
     int job_id, Compaction* compaction, const DBOptions& db_options,
-    const MutableCFOptions& mutable_cf_options, const EnvOptions& env_options,
-    VersionSet* versions, std::atomic<bool>* shutting_down,
-    LogBuffer* log_buffer, Directory* db_directory, Directory* output_directory,
-    Statistics* stats, SnapshotList* snapshots, bool is_snapshot_supported,
+    const EnvOptions& env_options, VersionSet* versions,
+    std::atomic<bool>* shutting_down, LogBuffer* log_buffer,
+    Directory* db_directory, Directory* output_directory, Statistics* stats,
+    std::vector<SequenceNumber> existing_snapshots,
     std::shared_ptr<Cache> table_cache,
-    std::function<uint64_t()> yield_callback)
+    std::function<uint64_t()> yield_callback, EventLogger* event_logger,
+    bool paranoid_file_checks)
     : job_id_(job_id),
       compact_(new CompactionState(compaction)),
       compaction_stats_(1),
       db_options_(db_options),
-      mutable_cf_options_(mutable_cf_options),
       env_options_(env_options),
       env_(db_options.env),
       versions_(versions),
@@ -222,18 +218,56 @@ CompactionJob::CompactionJob(
       db_directory_(db_directory),
       output_directory_(output_directory),
       stats_(stats),
-      snapshots_(snapshots),
-      is_snapshot_supported_(is_snapshot_supported),
+      existing_snapshots_(std::move(existing_snapshots)),
       table_cache_(std::move(table_cache)),
-      yield_callback_(std::move(yield_callback)) {
-  ThreadStatusUtil::SetColumnFamily(
-      compact_->compaction->column_family_data());
+      yield_callback_(std::move(yield_callback)),
+      event_logger_(event_logger),
+      paranoid_file_checks_(paranoid_file_checks) {
+  ThreadStatusUtil::SetColumnFamily(compact_->compaction->column_family_data());
   ThreadStatusUtil::SetThreadOperation(ThreadStatus::OP_COMPACTION);
+  ReportStartedCompaction(compaction);
 }
 
 CompactionJob::~CompactionJob() {
   assert(compact_ == nullptr);
   ThreadStatusUtil::ResetThreadStatus();
+}
+
+void CompactionJob::ReportStartedCompaction(
+    Compaction* compaction) {
+  ThreadStatusUtil::SetColumnFamily(
+      compact_->compaction->column_family_data());
+
+  ThreadStatusUtil::SetThreadOperationProperty(
+      ThreadStatus::COMPACTION_JOB_ID,
+      job_id_);
+
+  ThreadStatusUtil::SetThreadOperationProperty(
+      ThreadStatus::COMPACTION_INPUT_OUTPUT_LEVEL,
+      (static_cast<uint64_t>(compact_->compaction->start_level()) << 32) +
+          compact_->compaction->output_level());
+
+  ThreadStatusUtil::SetThreadOperationProperty(
+      ThreadStatus::COMPACTION_PROP_FLAGS,
+      compaction->IsManualCompaction() +
+          (compaction->IsDeletionCompaction() << 1) +
+          (compaction->IsTrivialMove() << 2));
+
+  ThreadStatusUtil::SetThreadOperationProperty(
+      ThreadStatus::COMPACTION_TOTAL_INPUT_BYTES,
+      compaction->CalculateTotalInputSize());
+
+  IOSTATS_RESET(bytes_written);
+  IOSTATS_RESET(bytes_read);
+  ThreadStatusUtil::SetThreadOperationProperty(
+      ThreadStatus::COMPACTION_BYTES_WRITTEN, 0);
+  ThreadStatusUtil::SetThreadOperationProperty(
+      ThreadStatus::COMPACTION_BYTES_READ, 0);
+
+  // Set the thread operation after operation properties
+  // to ensure GetThreadList() can always show them all together.
+  ThreadStatusUtil::SetThreadOperation(
+      ThreadStatus::OP_COMPACTION);
 }
 
 void CompactionJob::Prepare() {
@@ -242,23 +276,10 @@ void CompactionJob::Prepare() {
   compact_->CleanupBatchBuffer();
   compact_->CleanupMergedBuffer();
 
-  auto* compaction = compact_->compaction;
-
   // Generate file_levels_ for compaction berfore making Iterator
-  compaction->GenerateFileLevels();
-  ColumnFamilyData* cfd = compact_->compaction->column_family_data();
+  ColumnFamilyData* cfd __attribute__((unused)) =
+      compact_->compaction->column_family_data();
   assert(cfd != nullptr);
-  {
-    Compaction::InputLevelSummaryBuffer inputs_summary;
-    LogToBuffer(log_buffer_, "[%s] [JOB %d] Compacting %s, score %.2f",
-                cfd->GetName().c_str(), job_id_,
-                compaction->InputLevelSummary(&inputs_summary),
-                compaction->score());
-  }
-  char scratch[2345];
-  compact_->compaction->Summary(scratch, sizeof(scratch));
-  LogToBuffer(log_buffer_, "[%s] Compaction start summary: %s\n",
-              cfd->GetName().c_str(), scratch);
 
   assert(cfd->current()->storage_info()->NumLevelFiles(
              compact_->compaction->level()) > 0);
@@ -267,18 +288,16 @@ void CompactionJob::Prepare() {
 
   visible_at_tip_ = 0;
   latest_snapshot_ = 0;
-  // TODO(icanadi) move snapshots_ out of CompactionJob
-  snapshots_->getAll(compact_->existing_snapshots);
-  if (compact_->existing_snapshots.size() == 0) {
+  if (existing_snapshots_.size() == 0) {
     // optimize for fast path if there are no snapshots
     visible_at_tip_ = versions_->LastSequence();
     earliest_snapshot_ = visible_at_tip_;
   } else {
-    latest_snapshot_ = compact_->existing_snapshots.back();
+    latest_snapshot_ = existing_snapshots_.back();
     // Add the current seqno as the 'latest' virtual
     // snapshot to the end of this list.
-    compact_->existing_snapshots.push_back(versions_->LastSequence());
-    earliest_snapshot_ = compact_->existing_snapshots[0];
+    existing_snapshots_.push_back(versions_->LastSequence());
+    earliest_snapshot_ = existing_snapshots_[0];
   }
 
   // Is this compaction producing files at the bottommost level?
@@ -291,6 +310,35 @@ Status CompactionJob::Run() {
   TEST_SYNC_POINT("CompactionJob::Run():Start");
   log_buffer_->FlushBufferToLog();
   ColumnFamilyData* cfd = compact_->compaction->column_family_data();
+
+  auto* compaction = compact_->compaction;
+  // Let's check if anything will get logged. Don't prepare all the info if
+  // we're not logging
+  if (db_options_.info_log_level <= InfoLogLevel::INFO_LEVEL) {
+    Compaction::InputLevelSummaryBuffer inputs_summary;
+    Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log,
+        "[%s] [JOB %d] Compacting %s, score %.2f", cfd->GetName().c_str(),
+        job_id_, compaction->InputLevelSummary(&inputs_summary),
+        compaction->score());
+    char scratch[2345];
+    compact_->compaction->Summary(scratch, sizeof(scratch));
+    Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log,
+        "[%s] Compaction start summary: %s\n", cfd->GetName().c_str(), scratch);
+    // build event logger report
+    auto stream = event_logger_->Log();
+    stream << "job" << job_id_ << "event"
+           << "compaction_started";
+    for (size_t i = 0; i < compaction->num_input_levels(); ++i) {
+      stream << ("files_L" + ToString(compaction->level(i)));
+      stream.StartArray();
+      for (auto f : *compaction->inputs(i)) {
+        stream << f->fd.GetNumber();
+      }
+      stream.EndArray();
+    }
+    stream << "score" << compaction->score() << "input_data_size"
+           << compaction->CalculateTotalInputSize();
+  }
 
   const uint64_t start_micros = env_->NowMicros();
   std::unique_ptr<Iterator> input(
@@ -482,7 +530,6 @@ Status CompactionJob::Run() {
   if (compact_->num_input_records > compact_->num_output_records) {
     compaction_stats_.num_dropped_records +=
         compact_->num_input_records - compact_->num_output_records;
-    compact_->num_input_records = compact_->num_output_records = 0;
   }
 
   RecordCompactionIOStats();
@@ -492,7 +539,9 @@ Status CompactionJob::Run() {
   return status;
 }
 
-void CompactionJob::Install(Status* status, InstrumentedMutex* db_mutex) {
+void CompactionJob::Install(Status* status,
+                            const MutableCFOptions& mutable_cf_options,
+                            InstrumentedMutex* db_mutex) {
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_COMPACTION_INSTALL);
   db_mutex->AssertHeld();
@@ -501,17 +550,17 @@ void CompactionJob::Install(Status* status, InstrumentedMutex* db_mutex) {
       compact_->compaction->output_level(), compaction_stats_);
 
   if (status->ok()) {
-    *status = InstallCompactionResults(db_mutex);
+    *status = InstallCompactionResults(db_mutex, mutable_cf_options);
   }
   VersionStorageInfo::LevelSummaryStorage tmp;
+  auto vstorage = cfd->current()->storage_info();
   const auto& stats = compaction_stats_;
   LogToBuffer(log_buffer_,
               "[%s] compacted to: %s, MB/sec: %.1f rd, %.1f wr, level %d, "
               "files in(%d, %d) out(%d) "
               "MB in(%.1f, %.1f) out(%.1f), read-write-amplify(%.1f) "
               "write-amplify(%.1f) %s, records in: %d, records dropped: %d\n",
-              cfd->GetName().c_str(),
-              cfd->current()->storage_info()->LevelSummary(&tmp),
+              cfd->GetName().c_str(), vstorage->LevelSummary(&tmp),
               (stats.bytes_readn + stats.bytes_readnp1) /
                   static_cast<double>(stats.micros),
               stats.bytes_written / static_cast<double>(stats.micros),
@@ -524,6 +573,21 @@ void CompactionJob::Install(Status* status, InstrumentedMutex* db_mutex) {
               stats.bytes_written / static_cast<double>(stats.bytes_readn),
               status->ToString().c_str(), stats.num_input_records,
               stats.num_dropped_records);
+
+  auto stream = event_logger_->LogToBuffer(log_buffer_);
+  stream << "job" << job_id_ << "event"
+         << "compaction_finished"
+         << "output_level" << compact_->compaction->output_level()
+         << "num_output_files" << compact_->outputs.size()
+         << "total_output_size" << compact_->total_bytes << "num_input_records"
+         << compact_->num_input_records << "num_output_records"
+         << compact_->num_output_records;
+  stream << "lsm_state";
+  stream.StartArray();
+  for (int level = 0; level < vstorage->num_levels(); ++level) {
+    stream << vstorage->NumLevelFiles(level);
+  }
+  stream.EndArray();
 
   CleanupCompaction(*status);
 }
@@ -684,11 +748,8 @@ Status CompactionJob::ProcessKeyValueCompaction(int64_t* imm_micros,
       SequenceNumber visible =
           visible_at_tip_
               ? visible_at_tip_
-              : is_snapshot_supported_
-                    ? findEarliestVisibleSnapshot(ikey.sequence,
-                                                  compact_->existing_snapshots,
-                                                  &prev_snapshot)
-                    : 0;
+              : findEarliestVisibleSnapshot(ikey.sequence, existing_snapshots_,
+                                            &prev_snapshot);
 
       if (visible_in_snapshot == visible) {
         // If the earliest snapshot is which this key is visible in
@@ -950,6 +1011,7 @@ Status CompactionJob::FinishCompactionOutputFile(Iterator* input) {
   const uint32_t output_path_id = compact_->current_output()->path_id;
   assert(output_number != 0);
 
+  TableProperties table_properties;
   // Check for iterator errors
   Status s = input->status();
   const uint64_t current_entries = compact_->builder->NumEntries();
@@ -957,6 +1019,9 @@ Status CompactionJob::FinishCompactionOutputFile(Iterator* input) {
     s = compact_->builder->Finish();
   } else {
     compact_->builder->Abandon();
+  }
+  if (s.ok()) {
+    table_properties = compact_->builder->GetTableProperties();
   }
   const uint64_t current_bytes = compact_->builder->FileSize();
   compact_->current_output()->file_size = current_bytes;
@@ -985,6 +1050,12 @@ Status CompactionJob::FinishCompactionOutputFile(Iterator* input) {
     Iterator* iter = cfd->table_cache()->NewIterator(
         ReadOptions(), env_options_, cfd->internal_comparator(), fd);
     s = iter->status();
+
+    if (s.ok() && paranoid_file_checks_) {
+      for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {}
+      s = iter->status();
+    }
+
     delete iter;
     if (s.ok()) {
       Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log,
@@ -992,12 +1063,16 @@ Status CompactionJob::FinishCompactionOutputFile(Iterator* input) {
           " keys, %" PRIu64 " bytes",
           cfd->GetName().c_str(), job_id_, output_number, current_entries,
           current_bytes);
+      EventLoggerHelpers::LogTableFileCreation(event_logger_, job_id_,
+                                               output_number, current_bytes,
+                                               table_properties);
     }
   }
   return s;
 }
 
-Status CompactionJob::InstallCompactionResults(InstrumentedMutex* db_mutex) {
+Status CompactionJob::InstallCompactionResults(
+    InstrumentedMutex* db_mutex, const MutableCFOptions& mutable_cf_options) {
   db_mutex->AssertHeld();
 
   auto* compaction = compact_->compaction;
@@ -1032,7 +1107,7 @@ Status CompactionJob::InstallCompactionResults(InstrumentedMutex* db_mutex) {
         out.smallest, out.largest, out.smallest_seqno, out.largest_seqno);
   }
   return versions_->LogAndApply(compaction->column_family_data(),
-                                mutable_cf_options_, compaction->edit(),
+                                mutable_cf_options, compaction->edit(),
                                 db_mutex, db_directory_);
 }
 
@@ -1067,8 +1142,12 @@ inline SequenceNumber CompactionJob::findEarliestVisibleSnapshot(
 
 void CompactionJob::RecordCompactionIOStats() {
   RecordTick(stats_, COMPACT_READ_BYTES, IOSTATS(bytes_read));
+  ThreadStatusUtil::IncreaseThreadOperationProperty(
+      ThreadStatus::COMPACTION_BYTES_READ, IOSTATS(bytes_read));
   IOSTATS_RESET(bytes_read);
   RecordTick(stats_, COMPACT_WRITE_BYTES, IOSTATS(bytes_written));
+  ThreadStatusUtil::IncreaseThreadOperationProperty(
+      ThreadStatus::COMPACTION_BYTES_WRITTEN, IOSTATS(bytes_written));
   IOSTATS_RESET(bytes_written);
 }
 
@@ -1100,8 +1179,8 @@ Status CompactionJob::OpenCompactionOutputFile() {
 
   compact_->outputs.push_back(out);
   compact_->outfile->SetIOPriority(Env::IO_LOW);
-  compact_->outfile->SetPreallocationBlockSize(static_cast<size_t>(
-      compact_->compaction->OutputFilePreallocationSize(mutable_cf_options_)));
+  compact_->outfile->SetPreallocationBlockSize(
+      static_cast<size_t>(compact_->compaction->OutputFilePreallocationSize()));
 
   ColumnFamilyData* cfd = compact_->compaction->column_family_data();
   bool skip_filters = false;
@@ -1115,7 +1194,8 @@ Status CompactionJob::OpenCompactionOutputFile() {
   }
 
   compact_->builder.reset(NewTableBuilder(
-      *cfd->ioptions(), cfd->internal_comparator(), compact_->outfile.get(),
+      *cfd->ioptions(), cfd->internal_comparator(),
+      cfd->int_tbl_prop_collector_factories(), compact_->outfile.get(),
       compact_->compaction->OutputCompressionType(),
       cfd->ioptions()->compression_opts, skip_filters));
   LogFlush(db_options_.info_log);

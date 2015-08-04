@@ -1,5 +1,30 @@
 # Rocksdb Change Log
 
+## 3.11.2 (6/11/2015)
+
+### Fixes
+* Adjust the way we compensate for tombstones when chosing compactions. Previous heuristics led to pathological behavior in some cases.
+* Don't let two L0->L1 compactions run in parallel (only affected through experimental feature SuggestCompactRange)
+
+## 3.11.1 (6/1/2015)
+
+### Changes
+* Just a single change to fix the Java linking (github issue #606)
+
+## 3.11.0 (5/19/2015)
+
+### New Features
+* Added a new API Cache::SetCapacity(size_t capacity) to dynamically change the maximum configured capacity of the cache. If the new capacity is less than the existing cache usage, the implementation will try to lower the usage by evicting the necessary number of elements following a strict LRU policy.
+
+### New Features
+* Added an experimental API for handling flashcache devices (blacklists background threads from caching their reads) -- NewFlashcacheAwareEnv
+* If universal compaction is used and options.num_levels > 1, compact files are tried to be stored in none-L0 with smaller files based on options.target_file_size_base. The limitation of DB size when using universal compaction is greatly mitigated by using more levels. You can set num_levels = 1 to make universal compaction behave as before. If you set num_levels > 1 and want to roll back to a previous version, you need to compact all files to a big file in level 0 (by setting target_file_size_base to be large and CompactRange(<cf_handle>, nullptr, nullptr, true, 0) and reopen the DB with the same version to rewrite the manifest, and then you can open it using previous releases.
+* More information about rocksdb background threads are available in Env::GetThreadList(), including the number of bytes read / written by a compaction job, mem-table size and current number of bytes written by a flush job and many more.  Check include/rocksdb/thread_status.h for more detail.
+
+### Public API changes
+* TablePropertiesCollector::AddUserKey() is added to replace TablePropertiesCollector::Add(). AddUserKey() exposes key type, sequence number and file size up to now to users.
+* DBOptions::bytes_per_sync used to apply to both WAL and table files. As of 3.11 it applies only to table files. If you want to use this option to sync WAL in the background, please use wal_bytes_per_sync
+
 ## 3.10.0 (3/24/2015)
 ### New Features
 * GetThreadStatus() is now able to report detailed thread status, including:

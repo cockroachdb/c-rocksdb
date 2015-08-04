@@ -118,7 +118,11 @@ class ColumnFamilyTest : public testing::Test {
   int GetProperty(int cf, std::string property) {
     std::string value;
     EXPECT_TRUE(dbfull()->GetProperty(handles_[cf], property, &value));
+#ifndef CYGWIN
     return std::stoi(value);
+#else
+    return std::strtol(value.c_str(), 0);
+#endif
   }
 
   void Destroy() {
@@ -264,7 +268,7 @@ class ColumnFamilyTest : public testing::Test {
     VectorLogPtr wal_files;
     Status s;
     // GetSortedWalFiles is a flakey function -- it gets all the wal_dir
-    // children files and then later checks for their existance. if some of the
+    // children files and then later checks for their existence. if some of the
     // log files doesn't exist anymore, it reports an error. it does all of this
     // without DB mutex held, so if a background process deletes the log file
     // while the function is being executed, it returns an error. We retry the
@@ -548,9 +552,9 @@ TEST_F(ColumnFamilyTest, FlushTest) {
 
     for (int i = 0; i < 3; ++i) {
       uint64_t max_total_in_memory_state =
-          dbfull()->TEST_max_total_in_memory_state();
+          dbfull()->TEST_MaxTotalInMemoryState();
       Flush(i);
-      ASSERT_EQ(dbfull()->TEST_max_total_in_memory_state(),
+      ASSERT_EQ(dbfull()->TEST_MaxTotalInMemoryState(),
                 max_total_in_memory_state);
     }
     ASSERT_OK(Put(1, "foofoo", "bar"));
@@ -720,7 +724,9 @@ TEST_F(ColumnFamilyTest, DifferentWriteBufferSizes) {
   WaitForFlush(1);
   AssertNumberOfImmutableMemtables({0, 0, 0, 1});
   ASSERT_EQ(CountLiveLogFiles(), 5);
-  PutRandomData(3, 90*6, 1000);
+  PutRandomData(3, 240, 1000);
+  WaitForFlush(3);
+  PutRandomData(3, 300, 1000);
   WaitForFlush(3);
   AssertNumberOfImmutableMemtables({0, 0, 0, 0});
   ASSERT_EQ(CountLiveLogFiles(), 12);
@@ -807,6 +813,7 @@ TEST_F(ColumnFamilyTest, DifferentCompactionStyles) {
   default_cf.table_factory.reset(NewBlockBasedTableFactory(table_options));
 
   one.compaction_style = kCompactionStyleUniversal;
+  one.num_levels = 1;
   // trigger compaction if there are >= 4 files
   one.level0_file_num_compaction_trigger = 4;
   one.write_buffer_size = 100000;

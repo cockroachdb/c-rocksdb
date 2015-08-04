@@ -174,7 +174,7 @@ DEFINE_int32(compaction_thread_pool_adjust_interval, 0,
              "The interval (in milliseconds) to adjust compaction thread pool "
              "size. Don't change it periodically if the value is 0.");
 
-DEFINE_int32(compaction_thread_pool_varations, 2,
+DEFINE_int32(compaction_thread_pool_variations, 2,
              "Range of bakground thread pool size variations when adjusted "
              "periodically.");
 
@@ -1063,7 +1063,7 @@ class StressTest {
       }
 
       auto thread_pool_size_base = FLAGS_max_background_compactions;
-      auto thread_pool_size_var = FLAGS_compaction_thread_pool_varations;
+      auto thread_pool_size_var = FLAGS_compaction_thread_pool_variations;
       int new_thread_pool_size =
           thread_pool_size_base - thread_pool_size_var +
           thread->rand.Next() % (thread_pool_size_var * 2 + 1);

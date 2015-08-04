@@ -29,6 +29,7 @@
 #include "rocksdb/table.h"
 #include "rocksdb/table_properties.h"
 #include "table/block_based_table_factory.h"
+#include "util/compression.h"
 #include "util/statistics.h"
 #include "util/xfunc.h"
 
@@ -127,7 +128,8 @@ ColumnFamilyOptions::ColumnFamilyOptions()
       bloom_locality(0),
       max_successive_merges(0),
       min_partial_merge_operands(2),
-      optimize_filters_for_hits(false)
+      optimize_filters_for_hits(false),
+      paranoid_file_checks(false)
 #ifndef ROCKSDB_LITE
       ,
       listeners() {
@@ -196,7 +198,8 @@ ColumnFamilyOptions::ColumnFamilyOptions(const Options& options)
       bloom_locality(options.bloom_locality),
       max_successive_merges(options.max_successive_merges),
       min_partial_merge_operands(options.min_partial_merge_operands),
-      optimize_filters_for_hits(options.optimize_filters_for_hits)
+      optimize_filters_for_hits(options.optimize_filters_for_hits),
+      paranoid_file_checks(options.paranoid_file_checks)
 #ifndef ROCKSDB_LITE
       ,
       listeners(options.listeners) {
@@ -252,6 +255,7 @@ DBOptions::DBOptions()
       access_hint_on_compaction_start(NORMAL),
       use_adaptive_mutex(false),
       bytes_per_sync(0),
+      wal_bytes_per_sync(0),
       enable_thread_tracking(false) {
 }
 
@@ -295,6 +299,7 @@ DBOptions::DBOptions(const Options& options)
       access_hint_on_compaction_start(options.access_hint_on_compaction_start),
       use_adaptive_mutex(options.use_adaptive_mutex),
       bytes_per_sync(options.bytes_per_sync),
+      wal_bytes_per_sync(options.wal_bytes_per_sync),
       enable_thread_tracking(options.enable_thread_tracking) {}
 
 static const char* const access_hints[] = {
@@ -361,6 +366,8 @@ void DBOptions::Dump(Logger* log) const {
         rate_limiter.get());
     Log(log, "                          Options.bytes_per_sync: %" PRIu64,
         bytes_per_sync);
+    Log(log, "                      Options.wal_bytes_per_sync: %" PRIu64,
+        wal_bytes_per_sync);
     Log(log, "                  Options.enable_thread_tracking: %d",
         enable_thread_tracking);
 }  // DBOptions::Dump
@@ -383,11 +390,12 @@ void ColumnFamilyOptions::Dump(Logger* log) const {
   Log(log, " Options.max_write_buffer_number: %d", max_write_buffer_number);
     if (!compression_per_level.empty()) {
       for (unsigned int i = 0; i < compression_per_level.size(); i++) {
-          Log(log,"       Options.compression[%d]: %d",
-              i, compression_per_level[i]);
-       }
+        Log(log, "       Options.compression[%d]: %s", i,
+            CompressionTypeToString(compression_per_level[i]));
+      }
     } else {
-      Log(log,"         Options.compression: %d", compression);
+      Log(log, "         Options.compression: %s",
+          CompressionTypeToString(compression));
     }
     Log(log,"      Options.prefix_extractor: %s",
         prefix_extractor == nullptr ? "nullptr" : prefix_extractor->Name());
@@ -420,9 +428,10 @@ void ColumnFamilyOptions::Dump(Logger* log) const {
         level_compaction_dynamic_level_bytes);
     Log(log,"         Options.max_bytes_for_level_multiplier: %d",
         max_bytes_for_level_multiplier);
-    for (int i = 0; i < num_levels; i++) {
-      Log(log,"Options.max_bytes_for_level_multiplier_addtl[%d]: %d",
-          i, max_bytes_for_level_multiplier_additional[i]);
+    for (size_t i = 0; i < max_bytes_for_level_multiplier_additional.size();
+         i++) {
+      Log(log, "Options.max_bytes_for_level_multiplier_addtl[%zu]: %d", i,
+          max_bytes_for_level_multiplier_additional[i]);
     }
     Log(log,"      Options.max_sequential_skip_in_iterations: %" PRIu64,
         max_sequential_skip_in_iterations);
@@ -540,6 +549,46 @@ Options::PrepareForBulkLoad()
   // The compaction would create large files in L1.
   target_file_size_base = 256 * 1024 * 1024;
   return this;
+}
+
+const char* CompressionTypeToString(CompressionType compression_type) {
+  switch (compression_type) {
+    case kNoCompression:
+      return "NoCompression";
+    case kSnappyCompression:
+      return "Snappy";
+    case kZlibCompression:
+      return "Zlib";
+    case kBZip2Compression:
+      return "BZip2";
+    case kLZ4Compression:
+      return "LZ4";
+    case kLZ4HCCompression:
+      return "LZ4HC";
+    default:
+      assert(false);
+      return "";
+  }
+}
+
+bool CompressionTypeSupported(CompressionType compression_type) {
+  switch (compression_type) {
+    case kNoCompression:
+      return true;
+    case kSnappyCompression:
+      return Snappy_Supported();
+    case kZlibCompression:
+      return Zlib_Supported();
+    case kBZip2Compression:
+      return BZip2_Supported();
+    case kLZ4Compression:
+      return LZ4_Supported();
+    case kLZ4HCCompression:
+      return LZ4_Supported();
+    default:
+      assert(false);
+      return false;
+  }
 }
 
 #ifndef ROCKSDB_LITE

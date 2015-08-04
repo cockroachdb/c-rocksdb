@@ -300,7 +300,8 @@ class Env {
   // OptimizeForLogWrite will create a new EnvOptions object that is a copy of
   // the EnvOptions in the parameters, but is optimized for writing log files.
   // Default implementation returns the copy of the same object.
-  virtual EnvOptions OptimizeForLogWrite(const EnvOptions& env_options) const;
+  virtual EnvOptions OptimizeForLogWrite(const EnvOptions& env_options,
+                                         const DBOptions& db_options) const;
   // OptimizeForManifestWrite will create a new EnvOptions object that is a copy
   // of the EnvOptions in the parameters, but is optimized for writing manifest
   // files. Default implementation returns the copy of the same object.
@@ -531,6 +532,8 @@ class WritableFile {
   virtual Status RangeSync(off_t offset, off_t nbytes) {
     return Status::OK();
   }
+
+  size_t preallocation_block_size() { return preallocation_block_size_; }
 
  private:
   size_t last_preallocated_block_;

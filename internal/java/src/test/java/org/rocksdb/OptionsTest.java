@@ -921,21 +921,6 @@ public class OptionsTest {
   }
 
   @Test
-  public void skipLogErrorOnRecovery() {
-    Options opt = null;
-    try {
-      opt = new Options();
-      boolean boolValue = rand.nextBoolean();
-      opt.setSkipLogErrorOnRecovery(boolValue);
-      assertThat(opt.skipLogErrorOnRecovery()).isEqualTo(boolValue);
-    } finally {
-      if (opt != null) {
-        opt.dispose();
-      }
-    }
-  }
-
-  @Test
   public void statsDumpPeriodSec() {
     Options opt = null;
     try {
@@ -1130,7 +1115,7 @@ public class OptionsTest {
     RateLimiterConfig rateLimiterConfig;
     try {
       options = new Options();
-      rateLimiterConfig = new GenericRateLimiterConfig(1000, 0, 1);
+      rateLimiterConfig = new GenericRateLimiterConfig(1000, 100 * 1000, 1);
       options.setRateLimiterConfig(rateLimiterConfig);
       // Test with parameter initialization
       anotherOptions = new Options();
