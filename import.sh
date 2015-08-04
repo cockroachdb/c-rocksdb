@@ -5,6 +5,7 @@ set -eu
 rm -rf *.cc internal/*
 curl -sL https://github.com/facebook/rocksdb/archive/rocksdb-3.11.2.tar.gz | tar zxf - -C internal --strip-components=1
 make -C internal util/build_version.cc
+patch -p1 < gitignore.patch
 
 # stuff we need to compile.
 SOURCES=$(
@@ -23,3 +24,6 @@ SOURCES=$(
 for file in $SOURCES; do
   ln -sf $file .
 done
+
+# restore the repo to what it would look like when first cloned
+git clean -dxf
