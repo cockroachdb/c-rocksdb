@@ -13,6 +13,7 @@
 #endif
 
 #include <inttypes.h>
+#include <algorithm>
 #include <vector>
 #include "db/column_family.h"
 
@@ -82,12 +83,84 @@ void PrintLevelStats(char* buf, size_t len, const std::string& name,
 }
 }
 
+static const std::string rocksdb_prefix = "rocksdb.";
+
+static const std::string num_files_at_level_prefix = "num-files-at-level";
+static const std::string allstats = "stats";
+static const std::string sstables = "sstables";
+static const std::string cfstats = "cfstats";
+static const std::string dbstats = "dbstats";
+static const std::string levelstats = "levelstats";
+static const std::string num_immutable_mem_table = "num-immutable-mem-table";
+static const std::string mem_table_flush_pending = "mem-table-flush-pending";
+static const std::string compaction_pending = "compaction-pending";
+static const std::string background_errors = "background-errors";
+static const std::string cur_size_active_mem_table =
+                          "cur-size-active-mem-table";
+static const std::string cur_size_all_mem_tables = "cur-size-all-mem-tables";
+static const std::string num_entries_active_mem_table =
+                          "num-entries-active-mem-table";
+static const std::string num_entries_imm_mem_tables =
+                          "num-entries-imm-mem-tables";
+static const std::string num_deletes_active_mem_table =
+                          "num-deletes-active-mem-table";
+static const std::string num_deletes_imm_mem_tables =
+                          "num-deletes-imm-mem-tables";
+static const std::string estimate_num_keys = "estimate-num-keys";
+static const std::string estimate_table_readers_mem =
+                          "estimate-table-readers-mem";
+static const std::string is_file_deletions_enabled =
+                          "is-file-deletions-enabled";
+static const std::string num_snapshots = "num-snapshots";
+static const std::string oldest_snapshot_time = "oldest-snapshot-time";
+static const std::string num_live_versions = "num-live-versions";
+static const std::string base_level = "base-level";
+
+const std::string DB::Properties::kNumFilesAtLevelPrefix =
+                      rocksdb_prefix + num_files_at_level_prefix;
+const std::string DB::Properties::kStats = rocksdb_prefix + allstats;
+const std::string DB::Properties::kSSTables = rocksdb_prefix + sstables;
+const std::string DB::Properties::kCFStats = rocksdb_prefix + cfstats;
+const std::string DB::Properties::kDBStats = rocksdb_prefix + dbstats;
+const std::string DB::Properties::kNumImmutableMemTable =
+                      rocksdb_prefix + num_immutable_mem_table;
+const std::string DB::Properties::kMemTableFlushPending =
+                      rocksdb_prefix + mem_table_flush_pending;
+const std::string DB::Properties::kCompactionPending =
+                      rocksdb_prefix + compaction_pending;
+const std::string DB::Properties::kBackgroundErrors =
+                      rocksdb_prefix + background_errors;
+const std::string DB::Properties::kCurSizeActiveMemTable =
+                      rocksdb_prefix + cur_size_active_mem_table;
+const std::string DB::Properties::kCurSizeAllMemTables =
+                      rocksdb_prefix + cur_size_all_mem_tables;
+const std::string DB::Properties::kNumEntriesActiveMemTable =
+                      rocksdb_prefix + num_entries_active_mem_table;
+const std::string DB::Properties::kNumEntriesImmMemTables =
+                      rocksdb_prefix + num_entries_imm_mem_tables;
+const std::string DB::Properties::kNumDeletesActiveMemTable =
+                      rocksdb_prefix + num_deletes_active_mem_table;
+const std::string DB::Properties::kNumDeletesImmMemTables =
+                      rocksdb_prefix + num_deletes_imm_mem_tables;
+const std::string DB::Properties::kEstimateNumKeys =
+                      rocksdb_prefix + estimate_num_keys;
+const std::string DB::Properties::kEstimateTableReadersMem =
+                      rocksdb_prefix + estimate_table_readers_mem;
+const std::string DB::Properties::kIsFileDeletionsEnabled =
+                      rocksdb_prefix + is_file_deletions_enabled;
+const std::string DB::Properties::kNumSnapshots =
+                      rocksdb_prefix + num_snapshots;
+const std::string DB::Properties::kOldestSnapshotTime =
+                      rocksdb_prefix + oldest_snapshot_time;
+const std::string DB::Properties::kNumLiveVersions =
+                      rocksdb_prefix + num_live_versions;
+
 DBPropertyType GetPropertyType(const Slice& property, bool* is_int_property,
                                bool* need_out_of_mutex) {
   assert(is_int_property != nullptr);
   assert(need_out_of_mutex != nullptr);
   Slice in = property;
-  Slice prefix("rocksdb.");
+  Slice prefix(rocksdb_prefix);
   *need_out_of_mutex = false;
   *is_int_property = false;
   if (!in.starts_with(prefix)) {
@@ -95,55 +168,55 @@ DBPropertyType GetPropertyType(const Slice& property, bool* is_int_property,
   }
   in.remove_prefix(prefix.size());
 
-  if (in.starts_with("num-files-at-level")) {
+  if (in.starts_with(num_files_at_level_prefix)) {
     return kNumFilesAtLevel;
-  } else if (in == "levelstats") {
+  } else if (in == levelstats) {
     return kLevelStats;
-  } else if (in == "stats") {
+  } else if (in == allstats) {
     return kStats;
-  } else if (in == "cfstats") {
+  } else if (in == cfstats) {
     return kCFStats;
-  } else if (in == "dbstats") {
+  } else if (in == dbstats) {
     return kDBStats;
-  } else if (in == "sstables") {
+  } else if (in == sstables) {
     return kSsTables;
   }
 
   *is_int_property = true;
-  if (in == "num-immutable-mem-table") {
+  if (in == num_immutable_mem_table) {
     return kNumImmutableMemTable;
-  } else if (in == "mem-table-flush-pending") {
+  } else if (in == mem_table_flush_pending) {
     return kMemtableFlushPending;
-  } else if (in == "compaction-pending") {
+  } else if (in == compaction_pending) {
     return kCompactionPending;
-  } else if (in == "background-errors") {
+  } else if (in == background_errors) {
     return kBackgroundErrors;
-  } else if (in == "cur-size-active-mem-table") {
+  } else if (in == cur_size_active_mem_table) {
     return kCurSizeActiveMemTable;
-  } else if (in == "cur-size-all-mem-tables") {
+  } else if (in == cur_size_all_mem_tables) {
     return kCurSizeAllMemTables;
-  } else if (in == "num-entries-active-mem-table") {
+  } else if (in == num_entries_active_mem_table) {
     return kNumEntriesInMutableMemtable;
-  } else if (in == "num-entries-imm-mem-tables") {
+  } else if (in == num_entries_imm_mem_tables) {
     return kNumEntriesInImmutableMemtable;
-  } else if (in == "num-deletes-active-mem-table") {
+  } else if (in == num_deletes_active_mem_table) {
     return kNumDeletesInMutableMemtable;
-  } else if (in == "num-deletes-imm-mem-tables") {
+  } else if (in == num_deletes_imm_mem_tables) {
     return kNumDeletesInImmutableMemtable;
-  } else if (in == "estimate-num-keys") {
+  } else if (in == estimate_num_keys) {
     return kEstimatedNumKeys;
-  } else if (in == "estimate-table-readers-mem") {
+  } else if (in == estimate_table_readers_mem) {
     *need_out_of_mutex = true;
     return kEstimatedUsageByTableReaders;
-  } else if (in == "is-file-deletions-enabled") {
+  } else if (in == is_file_deletions_enabled) {
     return kIsFileDeletionEnabled;
-  } else if (in == "num-snapshots") {
+  } else if (in == num_snapshots) {
     return kNumSnapshots;
-  } else if (in == "oldest-snapshot-time") {
+  } else if (in == oldest_snapshot_time) {
     return kOldestSnapshotTime;
-  } else if (in == "num-live-versions") {
+  } else if (in == num_live_versions) {
     return kNumLiveVersions;
-  } else if (in == "base-level") {
+  } else if (in == base_level) {
     return kBaseLevel;
   }
   return kUnknown;
@@ -203,10 +276,10 @@ bool InternalStats::GetStringProperty(DBPropertyType property_type,
       return true;
     }
     case kStats: {
-      if (!GetStringProperty(kCFStats, "rocksdb.cfstats", value)) {
+      if (!GetStringProperty(kCFStats, DB::Properties::kCFStats, value)) {
         return false;
       }
-      if (!GetStringProperty(kDBStats, "rocksdb.dbstats", value)) {
+      if (!GetStringProperty(kDBStats, DB::Properties::kDBStats, value)) {
         return false;
       }
       return true;
@@ -324,6 +397,10 @@ void InternalStats::DumpDBStats(std::string* value) {
   uint64_t wal_synced = db_stats_[InternalStats::WAL_FILE_SYNCED];
   uint64_t write_with_wal = db_stats_[InternalStats::WRITE_WITH_WAL];
   uint64_t write_stall_micros = db_stats_[InternalStats::WRITE_STALL_MICROS];
+  uint64_t compact_bytes_read = 0;
+  uint64_t compact_bytes_write = 0;
+  uint64_t compact_micros = 0;
+
   const int kHumanMicrosLen = 32;
   char human_micros[kHumanMicrosLen];
 
@@ -336,22 +413,47 @@ void InternalStats::DumpDBStats(std::string* value) {
   // writes/batches is the average group commit size.
   //
   // The format is the same for interval stats.
-  AppendHumanMicros(write_stall_micros, human_micros, kHumanMicrosLen);
   snprintf(buf, sizeof(buf),
-           "Cumulative writes: %" PRIu64 " writes, %" PRIu64 " keys, %" PRIu64
-           " batches, %.1f writes per batch, %.2f GB user ingest, "
-           "stall time: %s\n",
-           write_other + write_self, num_keys_written, write_self,
+           "Cumulative writes: %s writes, %s keys, %s batches, "
+           "%.1f writes per batch, ingest: %.2f GB, %.2f MB/s\n",
+           NumberToHumanString(write_other + write_self).c_str(),
+           NumberToHumanString(num_keys_written).c_str(),
+           NumberToHumanString(write_self).c_str(),
            (write_other + write_self) / static_cast<double>(write_self + 1),
-           user_bytes_written / kGB, human_micros);
+           user_bytes_written / kGB, user_bytes_written / kMB / seconds_up);
   value->append(buf);
   // WAL
   snprintf(buf, sizeof(buf),
-           "Cumulative WAL: %" PRIu64 " writes, %" PRIu64 " syncs, "
-           "%.2f writes per sync, %.2f GB written\n",
-           write_with_wal, wal_synced,
+           "Cumulative WAL: %s writes, %s syncs, "
+           "%.2f writes per sync, written: %.2f GB, %.2f MB/s\n",
+           NumberToHumanString(write_with_wal).c_str(),
+           NumberToHumanString(wal_synced).c_str(),
            write_with_wal / static_cast<double>(wal_synced + 1),
-           wal_bytes / kGB);
+           wal_bytes / kGB, wal_bytes / kMB / seconds_up);
+  value->append(buf);
+  // Compact
+  for (int level = 0; level < number_levels_; level++) {
+    compact_bytes_read += comp_stats_[level].bytes_readnp1 +
+                          comp_stats_[level].bytes_readn;
+    compact_bytes_write += comp_stats_[level].bytes_written;
+    compact_micros += comp_stats_[level].micros;
+  }
+  snprintf(buf, sizeof(buf),
+           "Cumulative compaction: %.2f GB write, %.2f MB/s write, "
+           "%.2f GB read, %.2f MB/s read, %.1f seconds\n",
+           compact_bytes_write / kGB,
+           compact_bytes_write / kMB / seconds_up,
+           compact_bytes_read / kGB,
+           compact_bytes_read / kMB / seconds_up,
+           compact_micros / 1000000.0);
+  value->append(buf);
+  // Stall
+  AppendHumanMicros(write_stall_micros, human_micros, kHumanMicrosLen, true);
+  snprintf(buf, sizeof(buf),
+           "Cumulative stall: %s, %.1f percent\n",
+           human_micros,
+           // 10000 = divide by 1M to get secs, then multiply by 100 for pct
+           write_stall_micros / 10000.0 / std::max(seconds_up, 0.001));
   value->append(buf);
 
   // Interval
@@ -359,19 +461,18 @@ void InternalStats::DumpDBStats(std::string* value) {
   uint64_t interval_write_self = write_self - db_stats_snapshot_.write_self;
   uint64_t interval_num_keys_written =
       num_keys_written - db_stats_snapshot_.num_keys_written;
-  AppendHumanMicros(
-      write_stall_micros - db_stats_snapshot_.write_stall_micros,
-      human_micros, kHumanMicrosLen);
   snprintf(buf, sizeof(buf),
-           "Interval writes: %" PRIu64 " writes, %" PRIu64 " keys, %" PRIu64
-           " batches, %.1f writes per batch, %.1f MB user ingest, "
-           "stall time: %s\n",
-           interval_write_other + interval_write_self,
-           interval_num_keys_written, interval_write_self,
+           "Interval writes: %s writes, %s keys, %s batches, "
+           "%.1f writes per batch, ingest: %.2f MB, %.2f MB/s\n",
+           NumberToHumanString(
+               interval_write_other + interval_write_self).c_str(),
+           NumberToHumanString(interval_num_keys_written).c_str(),
+           NumberToHumanString(interval_write_self).c_str(),
            static_cast<double>(interval_write_other + interval_write_self) /
                (interval_write_self + 1),
            (user_bytes_written - db_stats_snapshot_.ingest_bytes) / kMB,
-           human_micros);
+           (user_bytes_written - db_stats_snapshot_.ingest_bytes) / kMB /
+               std::max(interval_seconds_up, 0.001)),
   value->append(buf);
 
   uint64_t interval_write_with_wal =
@@ -380,13 +481,46 @@ void InternalStats::DumpDBStats(std::string* value) {
   uint64_t interval_wal_bytes = wal_bytes - db_stats_snapshot_.wal_bytes;
 
   snprintf(buf, sizeof(buf),
-           "Interval WAL: %" PRIu64 " writes, %" PRIu64 " syncs, "
-           "%.2f writes per sync, %.2f MB written\n",
-           interval_write_with_wal,
-           interval_wal_synced,
+           "Interval WAL: %s writes, %s syncs, "
+           "%.2f writes per sync, written: %.2f MB, %.2f MB/s\n",
+           NumberToHumanString(interval_write_with_wal).c_str(),
+           NumberToHumanString(interval_wal_synced).c_str(),
            interval_write_with_wal /
               static_cast<double>(interval_wal_synced + 1),
-           interval_wal_bytes / kGB);
+           interval_wal_bytes / kGB,
+           interval_wal_bytes / kMB / std::max(interval_seconds_up, 0.001));
+  value->append(buf);
+
+  // Compaction
+  uint64_t interval_compact_bytes_write =
+      compact_bytes_write - db_stats_snapshot_.compact_bytes_write;
+  uint64_t interval_compact_bytes_read =
+      compact_bytes_read - db_stats_snapshot_.compact_bytes_read;
+  uint64_t interval_compact_micros =
+      compact_micros - db_stats_snapshot_.compact_micros;
+
+  snprintf(buf, sizeof(buf),
+           "Interval compaction: %.2f GB write, %.2f MB/s write, "
+           "%.2f GB read, %.2f MB/s read, %.1f seconds\n",
+           interval_compact_bytes_write / kGB,
+           interval_compact_bytes_write / kMB /
+               std::max(interval_seconds_up, 0.001),
+           interval_compact_bytes_read / kGB,
+           interval_compact_bytes_read / kMB /
+               std::max(interval_seconds_up, 0.001),
+           interval_compact_micros / 1000000.0);
+  value->append(buf);
+
+  // Stall
+  AppendHumanMicros(
+      write_stall_micros - db_stats_snapshot_.write_stall_micros,
+      human_micros, kHumanMicrosLen, true);
+  snprintf(buf, sizeof(buf),
+           "Interval stall: %s, %.1f percent\n",
+           human_micros,
+           // 10000 = divide by 1M to get secs, then multiply by 100 for pct
+           (write_stall_micros - db_stats_snapshot_.write_stall_micros) /
+               10000.0 / std::max(interval_seconds_up, 0.001));
   value->append(buf);
 
   db_stats_snapshot_.seconds_up = seconds_up;
@@ -398,6 +532,9 @@ void InternalStats::DumpDBStats(std::string* value) {
   db_stats_snapshot_.wal_synced = wal_synced;
   db_stats_snapshot_.write_with_wal = write_with_wal;
   db_stats_snapshot_.write_stall_micros = write_stall_micros;
+  db_stats_snapshot_.compact_bytes_write = compact_bytes_write;
+  db_stats_snapshot_.compact_bytes_read = compact_bytes_read;
+  db_stats_snapshot_.compact_micros = compact_micros;
 }
 
 void InternalStats::DumpCFStats(std::string* value) {
@@ -485,7 +622,7 @@ void InternalStats::DumpCFStats(std::string* value) {
   value->append(buf);
 
   snprintf(buf, sizeof(buf),
-           "Flush(GB): accumulative %.3f, interval %.3f\n",
+           "Flush(GB): cumulative %.3f, interval %.3f\n",
            curr_ingest / kGB, interval_ingest / kGB);
   value->append(buf);
 

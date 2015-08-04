@@ -229,7 +229,7 @@ TEST_F(CompactionPickerTest, Level0TriggerDynamic) {
   ASSERT_EQ(2U, compaction->num_input_files(0));
   ASSERT_EQ(1U, compaction->input(0, 0)->fd.GetNumber());
   ASSERT_EQ(2U, compaction->input(0, 1)->fd.GetNumber());
-  ASSERT_EQ(num_levels, static_cast<int>(compaction->num_input_levels()));
+  ASSERT_EQ(1, static_cast<int>(compaction->num_input_levels()));
   ASSERT_EQ(num_levels - 1, compaction->output_level());
 }
 
@@ -253,7 +253,7 @@ TEST_F(CompactionPickerTest, Level0TriggerDynamic2) {
   ASSERT_EQ(2U, compaction->num_input_files(0));
   ASSERT_EQ(1U, compaction->input(0, 0)->fd.GetNumber());
   ASSERT_EQ(2U, compaction->input(0, 1)->fd.GetNumber());
-  ASSERT_EQ(num_levels - 1, static_cast<int>(compaction->num_input_levels()));
+  ASSERT_EQ(1, static_cast<int>(compaction->num_input_levels()));
   ASSERT_EQ(num_levels - 2, compaction->output_level());
 }
 
@@ -278,7 +278,7 @@ TEST_F(CompactionPickerTest, Level0TriggerDynamic3) {
   ASSERT_EQ(2U, compaction->num_input_files(0));
   ASSERT_EQ(1U, compaction->input(0, 0)->fd.GetNumber());
   ASSERT_EQ(2U, compaction->input(0, 1)->fd.GetNumber());
-  ASSERT_EQ(num_levels - 2, static_cast<int>(compaction->num_input_levels()));
+  ASSERT_EQ(1, static_cast<int>(compaction->num_input_levels()));
   ASSERT_EQ(num_levels - 3, compaction->output_level());
 }
 
@@ -306,10 +306,11 @@ TEST_F(CompactionPickerTest, Level0TriggerDynamic4) {
   ASSERT_EQ(2U, compaction->num_input_files(0));
   ASSERT_EQ(1U, compaction->input(0, 0)->fd.GetNumber());
   ASSERT_EQ(2U, compaction->input(0, 1)->fd.GetNumber());
-  ASSERT_EQ(2U, compaction->num_input_files(num_levels - 3));
-  ASSERT_EQ(5U, compaction->input(num_levels - 3, 0)->fd.GetNumber());
-  ASSERT_EQ(6U, compaction->input(num_levels - 3, 1)->fd.GetNumber());
-  ASSERT_EQ(num_levels - 2, static_cast<int>(compaction->num_input_levels()));
+  ASSERT_EQ(2U, compaction->num_input_files(1));
+  ASSERT_EQ(num_levels - 3, compaction->level(1));
+  ASSERT_EQ(5U, compaction->input(1, 0)->fd.GetNumber());
+  ASSERT_EQ(6U, compaction->input(1, 1)->fd.GetNumber());
+  ASSERT_EQ(2, static_cast<int>(compaction->num_input_levels()));
   ASSERT_EQ(num_levels - 3, compaction->output_level());
 }
 
@@ -349,13 +350,16 @@ TEST_F(CompactionPickerTest, NeedsCompactionUniversal) {
   // must return false when there's no files.
   ASSERT_EQ(universal_compaction_picker.NeedsCompaction(vstorage_.get()),
             false);
+  UpdateVersionStorageInfo();
 
   // verify the trigger given different number of L0 files.
   for (int i = 1;
        i <= mutable_cf_options_.level0_file_num_compaction_trigger * 2; ++i) {
+    NewVersionStorage(1, kCompactionStyleUniversal);
     Add(0, i, ToString((i + 100) * 1000).c_str(),
         ToString((i + 100) * 1000 + 999).c_str(), 1000000, 0, i * 100,
         i * 100 + 99);
+    UpdateVersionStorageInfo();
     ASSERT_EQ(level_compaction_picker.NeedsCompaction(vstorage_.get()),
               vstorage_->CompactionScore(0) >= 1);
   }
@@ -372,6 +376,7 @@ TEST_F(CompactionPickerTest, NeedsCompactionFIFO) {
   ioptions_.compaction_options_fifo = fifo_options_;
   FIFOCompactionPicker fifo_compaction_picker(ioptions_, &icmp_);
 
+  UpdateVersionStorageInfo();
   // must return false when there's no files.
   ASSERT_EQ(fifo_compaction_picker.NeedsCompaction(vstorage_.get()), false);
 
@@ -379,15 +384,39 @@ TEST_F(CompactionPickerTest, NeedsCompactionFIFO) {
   // size of L0 files.
   uint64_t current_size = 0;
   for (int i = 1; i <= kFileCount; ++i) {
+    NewVersionStorage(1, kCompactionStyleFIFO);
     Add(0, i, ToString((i + 100) * 1000).c_str(),
         ToString((i + 100) * 1000 + 999).c_str(),
         kFileSize, 0, i * 100, i * 100 + 99);
     current_size += kFileSize;
+    UpdateVersionStorageInfo();
     ASSERT_EQ(level_compaction_picker.NeedsCompaction(vstorage_.get()),
               vstorage_->CompactionScore(0) >= 1);
   }
 }
 
+// This test exhibits the bug where we don't properly reset parent_index in
+// PickCompaction()
+TEST_F(CompactionPickerTest, ParentIndexResetBug) {
+  int num_levels = ioptions_.num_levels;
+  mutable_cf_options_.level0_file_num_compaction_trigger = 2;
+  mutable_cf_options_.max_bytes_for_level_base = 200;
+  NewVersionStorage(num_levels, kCompactionStyleLevel);
+  Add(0, 1U, "150", "200");       // <- marked for compaction
+  Add(1, 3U, "400", "500", 600);  // <- this one needs compacting
+  Add(2, 4U, "150", "200");
+  Add(2, 5U, "201", "210");
+  Add(2, 6U, "300", "310");
+  Add(2, 7U, "400", "500");  // <- being compacted
+
+  vstorage_->LevelFiles(2)[3]->being_compacted = true;
+  vstorage_->LevelFiles(0)[0]->marked_for_compaction = true;
+
+  UpdateVersionStorageInfo();
+
+  std::unique_ptr<Compaction> compaction(level_compaction_picker.PickCompaction(
+      cf_name_, mutable_cf_options_, vstorage_.get(), &log_buffer_));
+}
 
 }  // namespace rocksdb
 

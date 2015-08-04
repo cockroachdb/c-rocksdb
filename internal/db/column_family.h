@@ -21,6 +21,7 @@
 #include "db/write_batch_internal.h"
 #include "db/write_controller.h"
 #include "db/table_cache.h"
+#include "db/table_properties_collector.h"
 #include "db/flush_scheduler.h"
 #include "util/instrumented_mutex.h"
 #include "util/mutable_cf_options.h"
@@ -84,24 +85,23 @@ class ColumnFamilyHandleInternal : public ColumnFamilyHandleImpl {
 
 // holds references to memtable, all immutable memtables and version
 struct SuperVersion {
+  // Accessing members of this class is not thread-safe and requires external
+  // synchronization (ie db mutex held or on write thread).
   MemTable* mem;
   MemTableListVersion* imm;
   Version* current;
   MutableCFOptions mutable_cf_options;
-  std::atomic<uint32_t> refs;
-  // We need to_delete because during Cleanup(), imm->Unref() returns
-  // all memtables that we need to free through this vector. We then
-  // delete all those memtables outside of mutex, during destruction
-  autovector<MemTable*> to_delete;
   // Version number of the current SuperVersion
   uint64_t version_number;
+
   InstrumentedMutex* db_mutex;
 
   // should be called outside the mutex
   SuperVersion() = default;
   ~SuperVersion();
   SuperVersion* Ref();
-
+  // If Unref() returns true, Cleanup() should be called with mutex held
+  // before deleting this SuperVersion.
   bool Unref();
 
   // call these two methods with db mutex held
@@ -120,11 +120,25 @@ struct SuperVersion {
   static int dummy;
   static void* const kSVInUse;
   static void* const kSVObsolete;
+
+ private:
+  std::atomic<uint32_t> refs;
+  // We need to_delete because during Cleanup(), imm->Unref() returns
+  // all memtables that we need to free through this vector. We then
+  // delete all those memtables outside of mutex, during destruction
+  autovector<MemTable*> to_delete;
 };
 
 extern ColumnFamilyOptions SanitizeOptions(const DBOptions& db_options,
                                            const InternalKeyComparator* icmp,
                                            const ColumnFamilyOptions& src);
+// Wrap user defined table proproties collector factories `from cf_options`
+// into internal ones in int_tbl_prop_collector_factories. Add a system internal
+// one too.
+extern void GetIntTblPropCollectorFactory(
+    const ColumnFamilyOptions& cf_options,
+    std::vector<std::unique_ptr<IntTblPropCollectorFactory>>*
+        int_tbl_prop_collector_factories);
 
 class ColumnFamilySet;
 
@@ -222,6 +236,11 @@ class ColumnFamilyData {
   // REQUIRES: DB mutex held
   Compaction* PickCompaction(const MutableCFOptions& mutable_options,
                              LogBuffer* log_buffer);
+  // A flag to tell a manual compaction is to compact all levels together
+  // instad of for specific level.
+  static const int kCompactAllLevels;
+  // A flag to tell a manual compaction's output is base level.
+  static const int kCompactToBaseLevel;
   // REQUIRES: DB mutex held
   Compaction* CompactRange(
       const MutableCFOptions& mutable_cf_options,
@@ -237,6 +256,11 @@ class ColumnFamilyData {
   // thread-safe
   const InternalKeyComparator& internal_comparator() const {
     return internal_comparator_;
+  }
+
+  const std::vector<std::unique_ptr<IntTblPropCollectorFactory>>*
+  int_tbl_prop_collector_factories() const {
+    return &int_tbl_prop_collector_factories_;
   }
 
   SuperVersion* GetSuperVersion() { return super_version_; }
@@ -307,6 +331,8 @@ class ColumnFamilyData {
   bool dropped_;               // true if client dropped it
 
   const InternalKeyComparator internal_comparator_;
+  std::vector<std::unique_ptr<IntTblPropCollectorFactory>>
+      int_tbl_prop_collector_factories_;
 
   const Options options_;
   const ImmutableCFOptions ioptions_;

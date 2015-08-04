@@ -539,13 +539,10 @@ TEST_F(BackupableDBTest, NoDoubleCopy) {
   test_backup_env_->AssertWrittenFiles(should_have_written);
 
   ASSERT_OK(db_->DeleteBackup(1));
-  ASSERT_EQ(true,
-            test_backup_env_->FileExists(backupdir_ + "/shared/00010.sst"));
+  ASSERT_TRUE(test_backup_env_->FileExists(backupdir_ + "/shared/00010.sst"));
   // 00011.sst was only in backup 1, should be deleted
-  ASSERT_EQ(false,
-            test_backup_env_->FileExists(backupdir_ + "/shared/00011.sst"));
-  ASSERT_EQ(true,
-            test_backup_env_->FileExists(backupdir_ + "/shared/00015.sst"));
+  ASSERT_FALSE(test_backup_env_->FileExists(backupdir_ + "/shared/00011.sst"));
+  ASSERT_TRUE(test_backup_env_->FileExists(backupdir_ + "/shared/00015.sst"));
 
   // MANIFEST file size should be only 100
   uint64_t size;
@@ -924,14 +921,14 @@ TEST_F(BackupableDBTest, DeleteTmpFiles) {
   file_manager_->WriteToFile(shared_tmp, "tmp");
   file_manager_->CreateDir(private_tmp_dir);
   file_manager_->WriteToFile(private_tmp_file, "tmp");
-  ASSERT_EQ(true, file_manager_->FileExists(private_tmp_dir));
+  ASSERT_TRUE(file_manager_->FileExists(private_tmp_dir));
   OpenBackupableDB();
   // Need to call this explicitly to delete tmp files
   (void) db_->GarbageCollect();
   CloseBackupableDB();
-  ASSERT_EQ(false, file_manager_->FileExists(shared_tmp));
-  ASSERT_EQ(false, file_manager_->FileExists(private_tmp_file));
-  ASSERT_EQ(false, file_manager_->FileExists(private_tmp_dir));
+  ASSERT_FALSE(file_manager_->FileExists(shared_tmp));
+  ASSERT_FALSE(file_manager_->FileExists(private_tmp_file));
+  ASSERT_FALSE(file_manager_->FileExists(private_tmp_dir));
 }
 
 TEST_F(BackupableDBTest, KeepLogFiles) {
@@ -1024,6 +1021,30 @@ TEST_F(BackupableDBTest, ReadOnlyBackupEngine) {
   DB* db = OpenDB();
   AssertExists(db, 0, 200);
   delete db;
+}
+
+TEST_F(BackupableDBTest, GarbageCollectionBeforeBackup) {
+  DestroyDB(dbname_, Options());
+  OpenBackupableDB(true);
+
+  env_->CreateDirIfMissing(backupdir_ + "/shared");
+  std::string file_five = backupdir_ + "/shared/000005.sst";
+  std::string file_five_contents = "I'm not really a sst file";
+  // this depends on the fact that 00005.sst is the first file created by the DB
+  ASSERT_OK(file_manager_->WriteToFile(file_five, file_five_contents));
+
+  FillDB(db_.get(), 0, 100);
+  // backup overwrites file 000005.sst
+  ASSERT_TRUE(db_->CreateNewBackup(true).ok());
+
+  std::string new_file_five_contents;
+  ASSERT_OK(ReadFileToString(env_, file_five, &new_file_five_contents));
+  // file 000005.sst was overwritten
+  ASSERT_TRUE(new_file_five_contents != file_five_contents);
+
+  CloseBackupableDB();
+
+  AssertBackupConsistency(0, 0, 100);
 }
 
 }  // anon namespace

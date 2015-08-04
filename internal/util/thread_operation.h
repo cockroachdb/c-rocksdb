@@ -91,6 +91,26 @@ static StateInfo global_state_table[] = {
   {ThreadStatus::STATE_MUTEX_WAIT, "Mutex Wait"},
 };
 
+struct OperationProperty {
+  int code;
+  std::string name;
+};
+
+static OperationProperty compaction_operation_properties[] = {
+  {ThreadStatus::COMPACTION_JOB_ID, "JobID"},
+  {ThreadStatus::COMPACTION_INPUT_OUTPUT_LEVEL, "InputOutputLevel"},
+  {ThreadStatus::COMPACTION_PROP_FLAGS, "Manual/Deletion/Trivial"},
+  {ThreadStatus::COMPACTION_TOTAL_INPUT_BYTES, "TotalInputBytes"},
+  {ThreadStatus::COMPACTION_BYTES_READ, "BytesRead"},
+  {ThreadStatus::COMPACTION_BYTES_WRITTEN, "BytesWritten"},
+};
+
+static OperationProperty flush_operation_properties[] = {
+  {ThreadStatus::FLUSH_JOB_ID, "JobID"},
+  {ThreadStatus::FLUSH_BYTES_MEMTABLES, "BytesMemtables"},
+  {ThreadStatus::FLUSH_BYTES_WRITTEN, "BytesWritten"}
+};
+
 #else
 
 struct OperationInfo {
