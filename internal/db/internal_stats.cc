@@ -45,8 +45,10 @@ void PrintLevelStats(char* buf, size_t len, const std::string& name,
     int num_files, int being_compacted, double total_file_size, double score,
     double w_amp, uint64_t stalls,
     const InternalStats::CompactionStats& stats) {
-  uint64_t bytes_read = stats.bytes_readn + stats.bytes_readnp1;
-  int64_t bytes_new = stats.bytes_written - stats.bytes_readnp1;
+  uint64_t bytes_read =
+      stats.bytes_read_non_output_levels + stats.bytes_read_output_level;
+  int64_t bytes_new =
+      stats.bytes_written - stats.bytes_read_output_level;
   double elapsed = (stats.micros + 1) / 1000000.0;
   std::string num_input_records = NumberToHumanString(stats.num_input_records);
   std::string num_dropped_records =
@@ -71,8 +73,8 @@ void PrintLevelStats(char* buf, size_t len, const std::string& name,
            "%7s "   /* KeyIn */
            "%6s\n", /* KeyDrop */
            name.c_str(), num_files, being_compacted, total_file_size / kMB,
-           score, bytes_read / kGB, stats.bytes_readn / kGB,
-           stats.bytes_readnp1 / kGB, stats.bytes_written / kGB,
+           score, bytes_read / kGB, stats.bytes_read_non_output_levels / kGB,
+           stats.bytes_read_output_level / kGB, stats.bytes_written / kGB,
            bytes_new / kGB, stats.bytes_moved / kGB,
            w_amp, bytes_read / kMB / elapsed,
            stats.bytes_written / kMB / elapsed, stats.micros / 1000000.0,
@@ -92,6 +94,8 @@ static const std::string cfstats = "cfstats";
 static const std::string dbstats = "dbstats";
 static const std::string levelstats = "levelstats";
 static const std::string num_immutable_mem_table = "num-immutable-mem-table";
+static const std::string num_immutable_mem_table_flushed =
+    "num-immutable-mem-table-flushed";
 static const std::string mem_table_flush_pending = "mem-table-flush-pending";
 static const std::string compaction_pending = "compaction-pending";
 static const std::string background_errors = "background-errors";
@@ -185,6 +189,8 @@ DBPropertyType GetPropertyType(const Slice& property, bool* is_int_property,
   *is_int_property = true;
   if (in == num_immutable_mem_table) {
     return kNumImmutableMemTable;
+  } else if (in == num_immutable_mem_table_flushed) {
+    return kNumImmutableMemTableFlushed;
   } else if (in == mem_table_flush_pending) {
     return kMemtableFlushPending;
   } else if (in == compaction_pending) {
@@ -307,7 +313,10 @@ bool InternalStats::GetIntProperty(DBPropertyType property_type,
 
   switch (property_type) {
     case kNumImmutableMemTable:
-      *value = cfd_->imm()->size();
+      *value = cfd_->imm()->NumNotFlushed();
+      return true;
+    case kNumImmutableMemTableFlushed:
+      *value = cfd_->imm()->NumFlushed();
       return true;
     case kMemtableFlushPending:
       // Return number of mem tables that are ready to flush (made immutable)
@@ -433,8 +442,8 @@ void InternalStats::DumpDBStats(std::string* value) {
   value->append(buf);
   // Compact
   for (int level = 0; level < number_levels_; level++) {
-    compact_bytes_read += comp_stats_[level].bytes_readnp1 +
-                          comp_stats_[level].bytes_readn;
+    compact_bytes_read += comp_stats_[level].bytes_read_output_level +
+                          comp_stats_[level].bytes_read_non_output_levels;
     compact_bytes_write += comp_stats_[level].bytes_written;
     compact_micros += comp_stats_[level].micros;
   }
@@ -541,8 +550,7 @@ void InternalStats::DumpCFStats(std::string* value) {
   const VersionStorageInfo* vstorage = cfd_->current()->storage_info();
 
   int num_levels_to_check =
-      (cfd_->ioptions()->compaction_style != kCompactionStyleUniversal &&
-       cfd_->ioptions()->compaction_style != kCompactionStyleFIFO)
+      (cfd_->ioptions()->compaction_style != kCompactionStyleFIFO)
           ? vstorage->num_levels() - 1
           : 1;
 
@@ -555,7 +563,7 @@ void InternalStats::DumpCFStats(std::string* value) {
   }
   // Count # of files being compacted for each level
   std::vector<int> files_being_compacted(number_levels_, 0);
-  for (int level = 0; level < num_levels_to_check; ++level) {
+  for (int level = 0; level < number_levels_; ++level) {
     for (auto* f : vstorage->LevelFiles(level)) {
       if (f->being_compacted) {
         ++files_being_compacted[level];
@@ -592,9 +600,10 @@ void InternalStats::DumpCFStats(std::string* value) {
       total_stall_count += stalls;
       total_slowdown_count_soft += stall_leveln_slowdown_count_soft_[level];
       total_slowdown_count_hard += stall_leveln_slowdown_count_hard_[level];
-      double w_amp = (comp_stats_[level].bytes_readn == 0) ? 0.0
-          : comp_stats_[level].bytes_written /
-            static_cast<double>(comp_stats_[level].bytes_readn);
+      double w_amp =
+          (comp_stats_[level].bytes_read_non_output_levels == 0) ? 0.0
+          : static_cast<double>(comp_stats_[level].bytes_written) /
+            comp_stats_[level].bytes_read_non_output_levels;
       PrintLevelStats(buf, sizeof(buf), "L" + ToString(level), files,
                       files_being_compacted[level],
                       vstorage->NumLevelBytes(level), compaction_score[level],

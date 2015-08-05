@@ -74,8 +74,13 @@ enum Tickers : uint32_t {
   NUMBER_KEYS_READ,
   // Number keys updated, if inplace update is enabled
   NUMBER_KEYS_UPDATED,
-  // Bytes written / read
+  // The number of uncompressed bytes issued by DB::Put(), DB::Delete(),
+  // DB::Merge(), and DB::Write().
   BYTES_WRITTEN,
+  // The number of uncompressed bytes read from DB::Get().  It could be
+  // either from memtables, cache, or table files.
+  // For the number of logical bytes read from DB::MultiGet(),
+  // please use NUMBER_MULTIGET_BYTES_READ.
   BYTES_READ,
   NO_FILE_CLOSES,
   NO_FILE_OPENS,
@@ -141,6 +146,11 @@ enum Tickers : uint32_t {
   NUMBER_BLOCK_NOT_COMPRESSED,
   MERGE_OPERATION_TOTAL_TIME,
   FILTER_OPERATION_TOTAL_TIME,
+
+  // Row cache.
+  ROW_CACHE_HIT,
+  ROW_CACHE_MISS,
+
   TICKER_ENUM_MAX
 };
 
@@ -209,6 +219,8 @@ const std::vector<std::pair<Tickers, std::string>> TickersNameMap = {
     {NUMBER_BLOCK_NOT_COMPRESSED, "rocksdb.number.block.not_compressed"},
     {MERGE_OPERATION_TOTAL_TIME, "rocksdb.merge.operation.time.nanos"},
     {FILTER_OPERATION_TOTAL_TIME, "rocksdb.filter.operation.time.nanos"},
+    {ROW_CACHE_HIT, "rocksdb.row.cache.hit"},
+    {ROW_CACHE_MISS, "rocksdb.row.cache.miss"},
 };
 
 /**

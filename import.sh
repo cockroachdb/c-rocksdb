@@ -3,7 +3,7 @@
 set -eu
 
 rm -rf *.cc internal/*
-curl -sL https://github.com/facebook/rocksdb/archive/rocksdb-3.11.2.tar.gz | tar zxf - -C internal --strip-components=1
+curl -sL https://github.com/facebook/rocksdb/archive/rocksdb-3.12.1.tar.gz | tar zxf - -C internal --strip-components=1
 make -C internal util/build_version.cc
 patch -p1 < gitignore.patch
 

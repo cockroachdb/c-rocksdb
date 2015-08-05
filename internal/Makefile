@@ -30,7 +30,7 @@ quoted_perl_command = $(subst ','\'',$(perl_command))
 # We use this debug level when developing RocksDB.
 # * DEBUG_LEVEL=0; this is the debug level we use for release. If you're
 # running rocksdb in production you most definitely want to compile RocksDB
-# with debug level 0. To compile with level 0, run `make shared_lib`, 
+# with debug level 0. To compile with level 0, run `make shared_lib`,
 # `make install-shared`, `make static_lib`, `make install-static` or
 # `make install`
 DEBUG_LEVEL=1
@@ -231,6 +231,7 @@ TESTS = \
 	dynamic_bloom_test \
 	c_test \
 	cache_test \
+	checkpoint_test \
 	coding_test \
 	corruption_test \
 	crc32c_test \
@@ -287,7 +288,10 @@ TESTS = \
 	thread_list_test \
 	sst_dump_test \
 	compact_files_test \
-	perf_context_test
+	perf_context_test \
+	optimistic_transaction_test \
+	write_callback_test \
+	compaction_job_stats_test
 
 SUBSET :=  $(shell echo $(TESTS) |sed s/^.*$(ROCKSDBTESTS_START)/$(ROCKSDBTESTS_START)/)
 
@@ -296,7 +300,9 @@ TOOLS = \
 	db_sanity_test \
 	db_stress \
 	ldb \
-	db_repl_stress
+	db_repl_stress \
+	rocksdb_dump \
+	rocksdb_undump
 
 BENCHMARKS = db_bench table_reader_bench cache_bench memtablerep_bench
 
@@ -342,7 +348,8 @@ $(SHARED3): $(SHARED4)
 endif
 
 $(SHARED4):
-	$(CXX) $(PLATFORM_SHARED_LDFLAGS)$(SHARED3) $(CXXFLAGS) $(PLATFORM_SHARED_CFLAGS) $(LIB_SOURCES) $(LDFLAGS) -o $@
+	$(CXX) $(PLATFORM_SHARED_LDFLAGS)$(SHARED3) $(CXXFLAGS) $(PLATFORM_SHARED_CFLAGS) $(LIB_SOURCES) \
+		$(LDFLAGS) -o $@
 
 endif  # PLATFORM_SHARED_EXT
 
@@ -362,11 +369,11 @@ dbg: $(LIBRARY) $(BENCHMARKS) $(TOOLS) $(TESTS)
 # creates static library and programs
 release:
 	$(MAKE) clean
-	OPT="-DNDEBUG -O2" $(MAKE) static_lib $(TOOLS) db_bench -j32
+	OPT="-DNDEBUG -O2" $(MAKE) static_lib $(TOOLS) db_bench
 
 coverage:
 	$(MAKE) clean
-	COVERAGEFLAGS="-fprofile-arcs -ftest-coverage" LDFLAGS+="-lgcov" $(MAKE) all check -j32
+	COVERAGEFLAGS="-fprofile-arcs -ftest-coverage" LDFLAGS+="-lgcov" $(MAKE) all check
 	cd coverage && ./coverage_test.sh
         # Delete intermediate files
 	find . -type f -regex ".*\.\(\(gcda\)\|\(gcno\)\)" -exec rm {} \;
@@ -497,18 +504,21 @@ CLEAN_FILES += t LOG $(TMPD)
 watch-log:
 	watch --interval=0 'sort -k7,7nr -k4,4gr LOG|$(quoted_perl_command)'
 
-# If GNU parallel is installed, run the tests in parallel,
+# If J != 1 and GNU parallel is installed, run the tests in parallel,
 # via the check_0 rule above.  Otherwise, run them sequentially.
 check: all
-	$(AM_V_GEN)case $$(parallel --gnu --help 2>/dev/null) in	\
-	  *'GNU Parallel'*)						\
-	    t=$$($(test_names));					\
-	    $(MAKE) T="$$t" TMPD=$(TMPD) check_0;;			\
-	  *)								\
-	    for t in $(TESTS); do					\
-	      echo "===== Running $$t"; ./$$t || exit 1; done;;		\
-	esac
+	$(AM_V_GEN)if test "$(J)" != 1                                  \
+	    && (parallel --gnu --help 2>/dev/null) |                    \
+	        grep -q 'GNU Parallel';                                 \
+	then                                                            \
+	    t=$$($(test_names));                                        \
+	    $(MAKE) T="$$t" TMPD=$(TMPD) check_0;                       \
+	else                                                            \
+	    for t in $(TESTS); do                                       \
+	      echo "===== Running $$t"; ./$$t || exit 1; done;          \
+	fi
 	rm -rf $(TMPD)
+	sh tools/rocksdb_dump_test.sh
 
 check_some: $(SUBSET) ldb_tests
 	for t in $(SUBSET); do echo "===== Running $$t"; ./$$t || exit 1; done
@@ -689,6 +699,9 @@ prefix_test: db/prefix_test.o $(LIBOBJECTS) $(TESTHARNESS)
 backupable_db_test: utilities/backupable/backupable_db_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
+checkpoint_test: utilities/checkpoint/checkpoint_test.o $(LIBOBJECTS) $(TESTHARNESS)
+	$(AM_LINK)
+
 document_db_test: utilities/document/document_db_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
@@ -708,6 +721,9 @@ flush_job_test: db/flush_job_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 compaction_job_test: db/compaction_job_test.o $(LIBOBJECTS) $(TESTHARNESS)
+	$(AM_LINK)
+
+compaction_job_stats_test: db/compaction_job_stats_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 wal_manager_test: db/wal_manager_test.o $(LIBOBJECTS) $(TESTHARNESS)
@@ -782,6 +798,12 @@ deletefile_test: db/deletefile_test.o $(LIBOBJECTS) $(TESTHARNESS)
 geodb_test: utilities/geodb/geodb_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
+rocksdb_dump: tools/dump/rocksdb_dump.o $(LIBOBJECTS)
+	$(AM_LINK)
+
+rocksdb_undump: tools/dump/rocksdb_undump.o $(LIBOBJECTS)
+	$(AM_LINK)
+
 cuckoo_table_builder_test: table/cuckoo_table_builder_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
@@ -795,9 +817,6 @@ listener_test: db/listener_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 thread_list_test: util/thread_list_test.o $(LIBOBJECTS) $(TESTHARNESS)
-	$(AM_LINK)
-
-compactor_test: utilities/compaction/compactor_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 compact_files_test: db/compact_files_test.o $(LIBOBJECTS) $(TESTHARNESS)
@@ -815,6 +834,9 @@ sst_dump_test: util/sst_dump_test.o $(LIBOBJECTS) $(TESTHARNESS)
 memenv_test : util/memenv_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
+optimistic_transaction_test: utilities/transactions/optimistic_transaction_test.o $(LIBOBJECTS) $(TESTHARNESS)
+	$(AM_LINK)
+
 mock_env_test : util/mock_env_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
@@ -828,6 +850,9 @@ auto_roll_logger_test: util/auto_roll_logger_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 memtable_list_test: db/memtable_list_test.o $(LIBOBJECTS) $(TESTHARNESS)
+	$(AM_LINK)
+
+write_callback_test: db/write_callback_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 sst_dump: tools/sst_dump.o $(LIBOBJECTS)
