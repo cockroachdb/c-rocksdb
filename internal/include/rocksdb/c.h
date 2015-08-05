@@ -264,6 +264,34 @@ extern char* rocksdb_get_cf(
     size_t* vallen,
     char** errptr);
 
+// if values_list[i] == NULL and errs[i] == NULL,
+// then we got status.IsNotFound(), which we will not return.
+// all errors except status status.ok() and status.IsNotFound() are returned.
+//
+// errs, values_list and values_list_sizes must be num_keys in length,
+// allocated by the caller.
+// errs is a list of strings as opposed to the conventional one error,
+// where errs[i] is the status for retrieval of keys_list[i].
+// each non-NULL errs entry is a malloc()ed, null terminated string.
+// each non-NULL values_list entry is a malloc()ed array, with
+// the length for each stored in values_list_sizes[i].
+extern void rocksdb_multi_get(
+    rocksdb_t* db,
+    const rocksdb_readoptions_t* options,
+    size_t num_keys, const char* const* keys_list,
+    const size_t* keys_list_sizes,
+    char** values_list, size_t* values_list_sizes,
+    char** errs);
+
+extern void rocksdb_multi_get_cf(
+    rocksdb_t* db,
+    const rocksdb_readoptions_t* options,
+    const rocksdb_column_family_handle_t* const* column_families,
+    size_t num_keys, const char* const* keys_list,
+    const size_t* keys_list_sizes,
+    char** values_list, size_t* values_list_sizes,
+    char** errs);
+
 extern rocksdb_iterator_t* rocksdb_create_iterator(
     rocksdb_t* db,
     const rocksdb_readoptions_t* options);
@@ -380,6 +408,19 @@ extern void rocksdb_writebatch_put_cf(
     rocksdb_column_family_handle_t* column_family,
     const char* key, size_t klen,
     const char* val, size_t vlen);
+extern void rocksdb_writebatch_putv(
+    rocksdb_writebatch_t* b,
+    int num_keys, const char* const* keys_list,
+    const size_t* keys_list_sizes,
+    int num_values, const char* const* values_list,
+    const size_t* values_list_sizes);
+extern void rocksdb_writebatch_putv_cf(
+    rocksdb_writebatch_t* b,
+    rocksdb_column_family_handle_t* column_family,
+    int num_keys, const char* const* keys_list,
+    const size_t* keys_list_sizes,
+    int num_values, const char* const* values_list,
+    const size_t* values_list_sizes);
 extern void rocksdb_writebatch_merge(
     rocksdb_writebatch_t*,
     const char* key, size_t klen,
@@ -389,6 +430,19 @@ extern void rocksdb_writebatch_merge_cf(
     rocksdb_column_family_handle_t* column_family,
     const char* key, size_t klen,
     const char* val, size_t vlen);
+extern void rocksdb_writebatch_mergev(
+    rocksdb_writebatch_t* b,
+    int num_keys, const char* const* keys_list,
+    const size_t* keys_list_sizes,
+    int num_values, const char* const* values_list,
+    const size_t* values_list_sizes);
+extern void rocksdb_writebatch_mergev_cf(
+    rocksdb_writebatch_t* b,
+    rocksdb_column_family_handle_t* column_family,
+    int num_keys, const char* const* keys_list,
+    const size_t* keys_list_sizes,
+    int num_values, const char* const* values_list,
+    const size_t* values_list_sizes);
 extern void rocksdb_writebatch_delete(
     rocksdb_writebatch_t*,
     const char* key, size_t klen);
@@ -396,6 +450,18 @@ extern void rocksdb_writebatch_delete_cf(
     rocksdb_writebatch_t*,
     rocksdb_column_family_handle_t* column_family,
     const char* key, size_t klen);
+void rocksdb_writebatch_deletev(
+    rocksdb_writebatch_t* b,
+    int num_keys, const char* const* keys_list,
+    const size_t* keys_list_sizes);
+void rocksdb_writebatch_deletev_cf(
+    rocksdb_writebatch_t* b,
+    rocksdb_column_family_handle_t* column_family,
+    int num_keys, const char* const* keys_list,
+    const size_t* keys_list_sizes);
+extern void rocksdb_writebatch_put_log_data(
+    rocksdb_writebatch_t*,
+    const char* blob, size_t len);
 extern void rocksdb_writebatch_iterate(
     rocksdb_writebatch_t*,
     void* state,
@@ -427,6 +493,18 @@ extern void rocksdb_block_based_options_set_block_cache_compressed(
     rocksdb_block_based_table_options_t* options,
     rocksdb_cache_t* block_cache_compressed);
 extern void rocksdb_block_based_options_set_whole_key_filtering(
+    rocksdb_block_based_table_options_t*, unsigned char);
+extern void rocksdb_block_based_options_set_format_version(
+    rocksdb_block_based_table_options_t*, int);
+enum {
+  rocksdb_block_based_table_index_type_binary_search = 0,
+  rocksdb_block_based_table_index_type_hash_search = 1,
+};
+extern void rocksdb_block_based_options_set_index_type(
+    rocksdb_block_based_table_options_t*, int); // uses one of the above enums
+extern void rocksdb_block_based_options_set_hash_index_allow_collision(
+    rocksdb_block_based_table_options_t*, unsigned char);
+extern void rocksdb_block_based_options_set_cache_index_and_filter_blocks(
     rocksdb_block_based_table_options_t*, unsigned char);
 extern void rocksdb_options_set_block_based_table_factory(
     rocksdb_options_t *opt, rocksdb_block_based_table_options_t* table_options);
@@ -476,6 +554,7 @@ extern void rocksdb_options_set_comparator(
 extern void rocksdb_options_set_merge_operator(
     rocksdb_options_t*,
     rocksdb_mergeoperator_t*);
+extern void rocksdb_options_set_uint64add_merge_operator(rocksdb_options_t*);
 extern void rocksdb_options_set_compression_per_level(
   rocksdb_options_t* opt,
   int* level_values,
@@ -523,8 +602,13 @@ extern void rocksdb_options_set_max_bytes_for_level_multiplier_additional(
     rocksdb_options_t*, int* level_values, size_t num_levels);
 extern void rocksdb_options_enable_statistics(rocksdb_options_t*);
 
+/* returns a pointer to a malloc()-ed, null terminated string */
+extern char *rocksdb_options_statistics_get_string(rocksdb_options_t *opt);
+
 extern void rocksdb_options_set_max_write_buffer_number(rocksdb_options_t*, int);
 extern void rocksdb_options_set_min_write_buffer_number_to_merge(rocksdb_options_t*, int);
+extern void rocksdb_options_set_max_write_buffer_number_to_maintain(
+    rocksdb_options_t*, int);
 extern void rocksdb_options_set_max_background_compactions(rocksdb_options_t*, int);
 extern void rocksdb_options_set_max_background_flushes(rocksdb_options_t*, int);
 extern void rocksdb_options_set_max_log_file_size(rocksdb_options_t*, size_t);
@@ -821,6 +905,7 @@ extern rocksdb_slicetransform_t* rocksdb_slicetransform_create(
         const char* key, size_t length),
     const char* (*name)(void*));
 extern rocksdb_slicetransform_t* rocksdb_slicetransform_create_fixed_prefix(size_t);
+extern rocksdb_slicetransform_t* rocksdb_slicetransform_create_noop();
 extern void rocksdb_slicetransform_destroy(rocksdb_slicetransform_t*);
 
 /* Universal Compaction options */

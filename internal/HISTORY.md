@@ -1,22 +1,39 @@
 # Rocksdb Change Log
 
-## 3.11.2 (6/11/2015)
+## 3.12.1 (7/16/2015)
+* Fix data loss after DB recovery by not allowing flush/compaction to be scheduled until DB opened
 
-### Fixes
-* Adjust the way we compensate for tombstones when chosing compactions. Previous heuristics led to pathological behavior in some cases.
-* Don't let two L0->L1 compactions run in parallel (only affected through experimental feature SuggestCompactRange)
+## 3.12.0 (7/2/2015)
+### New Features
+* Added experimental support for optimistic transactions.  See include/rocksdb/utilities/optimistic_transaction.h for more info.
+* Added a new way to report QPS from db_bench (check out --report_file and --report_interval_seconds)
+* Added a cache for individual rows. See DBOptions::row_cache for more info.
+* Several new features on EventListener (see include/rocksdb/listener.h):
+ - OnCompationCompleted() now returns per-compaciton job statistics, defined in include/rocksdb/compaction_job_stats.h.
+ - Added OnTableFileCreated() and OnTableFileDeleted().
 
-## 3.11.1 (6/1/2015)
-
-### Changes
-* Just a single change to fix the Java linking (github issue #606)
+### Public API changes
+* EventListener::OnFlushCompleted() now passes FlushJobInfo instead of a list of parameters.
+* DB::GetDbIdentity() is now a const function.  If this function is overridden in your application, be sure to also make GetDbIdentity() const to avoid compile error.
+* Move listeners from ColumnFamilyOptions to DBOptions.
+* Add max_write_buffer_number_to_maintain option
+* DB::CompactRange()'s parameter reduce_level is changed to change_level, to allow users to move levels to lower levels if allowed. It can be used to migrate a DB from options.level_compaction_dynamic_level_bytes=false to options.level_compaction_dynamic_level_bytes.true.
+* Change default value for options.compaction_filter_factory and options.compaction_filter_factory_v2 to nullptr instead of DefaultCompactionFilterFactory and DefaultCompactionFilterFactoryV2.
+* If CancelAllBackgroundWork is called without doing a flush after doing loads with WAL disabled, the changes which haven't been flushed before the call to CancelAllBackgroundWork will be lost.
+* WBWIIterator::Entry() now returns WriteEntry instead of `const WriteEntry&`
+* options.hard_rate_limit is deprecated.
+* When options.soft_rate_limit or options.level0_slowdown_writes_trigger is triggered, the way to slow down writes is changed to: write rate to DB is limited to to options.delayed_write_rate.
+* DB::GetApproximateSizes() adds a parameter to allow the estimation to include data in mem table, with default to be not to include. It is now only supported in skip list mem table.
+* DB::CompactRange() now accept CompactRangeOptions instead of multiple paramters. CompactRangeOptions is defined in include/rocksdb/options.h.
+* CompactRange() will now skip bottommost level compaction for level based compaction if there is no compaction filter, bottommost_level_compaction is introduced in CompactRangeOptions to control when it's possbile to skip bottommost level compaction. This mean that if you want the compaction to produce a single file you need to set bottommost_level_compaction to BottommostLevelCompaction::kForce.
+* Add Cache.GetPinnedUsage() to get the size of memory occupied by entries that are in use by the system.
+* DB:Open() will fail if the compression specified in Options is not linked with the binary. If you see this failure, recompile RocksDB with compression libraries present on your system. Also, previously our default compression was snappy. This behavior is now changed. Now, the default compression is snappy only if it's available on the system. If it isn't we change the default to kNoCompression.
+* We changed how we account for memory used in block cache. Previously, we only counted the sum of block sizes currently present in block cache. Now, we count the actual memory usage of the blocks. For example, a block of size 4.5KB will use 8KB memory with jemalloc. This might decrease your memory usage and possibly decrease performance. Increase block cache size if you see this happening after an upgrade.
+* Add BackupEngineImpl.options_.max_background_operations to specify the maximum number of operations that may be performed in parallel. Add support for parallelized backup and restore.
 
 ## 3.11.0 (5/19/2015)
-
 ### New Features
 * Added a new API Cache::SetCapacity(size_t capacity) to dynamically change the maximum configured capacity of the cache. If the new capacity is less than the existing cache usage, the implementation will try to lower the usage by evicting the necessary number of elements following a strict LRU policy.
-
-### New Features
 * Added an experimental API for handling flashcache devices (blacklists background threads from caching their reads) -- NewFlashcacheAwareEnv
 * If universal compaction is used and options.num_levels > 1, compact files are tried to be stored in none-L0 with smaller files based on options.target_file_size_base. The limitation of DB size when using universal compaction is greatly mitigated by using more levels. You can set num_levels = 1 to make universal compaction behave as before. If you set num_levels > 1 and want to roll back to a previous version, you need to compact all files to a big file in level 0 (by setting target_file_size_base to be large and CompactRange(<cf_handle>, nullptr, nullptr, true, 0) and reopen the DB with the same version to rewrite the manifest, and then you can open it using previous releases.
 * More information about rocksdb background threads are available in Env::GetThreadList(), including the number of bytes read / written by a compaction job, mem-table size and current number of bytes written by a flush job and many more.  Check include/rocksdb/thread_status.h for more detail.
