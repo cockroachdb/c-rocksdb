@@ -6,17 +6,19 @@
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
-
 #pragma once
-#include <memory>
+
 #include <stdint.h>
+
+#include <memory>
+
 #include "db/log_format.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/status.h"
 
 namespace rocksdb {
 
-class WritableFile;
+class WritableFileWriter;
 
 using std::unique_ptr;
 
@@ -61,16 +63,16 @@ class Writer {
   // Create a writer that will append data to "*dest".
   // "*dest" must be initially empty.
   // "*dest" must remain live while this Writer is in use.
-  explicit Writer(unique_ptr<WritableFile>&& dest);
+  explicit Writer(unique_ptr<WritableFileWriter>&& dest);
   ~Writer();
 
   Status AddRecord(const Slice& slice);
 
-  WritableFile* file() { return dest_.get(); }
-  const WritableFile* file() const { return dest_.get(); }
+  WritableFileWriter* file() { return dest_.get(); }
+  const WritableFileWriter* file() const { return dest_.get(); }
 
  private:
-  unique_ptr<WritableFile> dest_;
+  unique_ptr<WritableFileWriter> dest_;
   int block_offset_;       // Current offset in block
 
   // crc32c values for all supported record types.  These are

@@ -11,7 +11,7 @@
 
 #include <atomic>
 #include <deque>
-#include "port/port_posix.h"
+#include "port/port.h"
 #include "util/mutexlock.h"
 #include "util/random.h"
 #include "rocksdb/env.h"
@@ -31,7 +31,7 @@ class GenericRateLimiter : public RateLimiter {
 
   // Request for token to write bytes. If this request can not be satisfied,
   // the call is blocked. Caller is responsible to make sure
-  // bytes < GetSingleBurstBytes()
+  // bytes <= GetSingleBurstBytes()
   virtual void Request(const int64_t bytes, const Env::IOPriority pri) override;
 
   virtual int64_t GetSingleBurstBytes() const override {

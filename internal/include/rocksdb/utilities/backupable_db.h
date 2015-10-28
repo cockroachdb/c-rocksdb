@@ -178,10 +178,6 @@ class BackupEngineReadOnly {
  public:
   virtual ~BackupEngineReadOnly() {}
 
-  static BackupEngineReadOnly* NewReadOnlyBackupEngine(
-      Env* db_env, const BackupableDBOptions& options)
-      __attribute__((deprecated("Please use Open() instead")));
-
   static Status Open(Env* db_env, const BackupableDBOptions& options,
                      BackupEngineReadOnly** backup_engine_ptr);
 
@@ -201,16 +197,17 @@ class BackupEngineReadOnly {
   virtual Status RestoreDBFromLatestBackup(
       const std::string& db_dir, const std::string& wal_dir,
       const RestoreOptions& restore_options = RestoreOptions()) = 0;
+
+  // checks that each file exists and that the size of the file matches our
+  // expectations. it does not check file checksum.
+  // Returns Status::OK() if all checks are good
+  virtual Status VerifyBackup(BackupID backup_id) = 0;
 };
 
 // Please see the documentation in BackupableDB and RestoreBackupableDB
 class BackupEngine {
  public:
   virtual ~BackupEngine() {}
-
-  static BackupEngine* NewBackupEngine(Env* db_env,
-                                       const BackupableDBOptions& options)
-    __attribute__((deprecated("Please use Open() instead")));
 
   static Status Open(Env* db_env,
                      const BackupableDBOptions& options,
@@ -230,6 +227,11 @@ class BackupEngine {
   virtual Status RestoreDBFromLatestBackup(
       const std::string& db_dir, const std::string& wal_dir,
       const RestoreOptions& restore_options = RestoreOptions()) = 0;
+
+  // checks that each file exists and that the size of the file matches our
+  // expectations. it does not check file checksum.
+  // Returns Status::OK() if all checks are good
+  virtual Status VerifyBackup(BackupID backup_id) = 0;
 
   virtual Status GarbageCollect() = 0;
 };
@@ -272,6 +274,7 @@ class BackupableDB : public StackableDB {
 
  private:
   BackupEngine* backup_engine_;
+  Status status_;
 };
 
 // Use this class to access information about backups and restore from them
@@ -317,6 +320,7 @@ class RestoreBackupableDB {
 
  private:
   BackupEngine* backup_engine_;
+  Status status_;
 };
 
 }  // namespace rocksdb

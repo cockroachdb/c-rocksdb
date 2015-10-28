@@ -38,7 +38,7 @@ class SanityTest {
     options.create_if_missing = true;
     std::string dbname = path_ + Name();
     DestroyDB(dbname, options);
-    DB* db;
+    DB* db = nullptr;
     Status s = DB::Open(options, dbname, &db);
     std::unique_ptr<DB> db_guard(db);
     if (!s.ok()) {
@@ -55,7 +55,7 @@ class SanityTest {
     return db->Flush(FlushOptions());
   }
   Status Verify() {
-    DB* db;
+    DB* db = nullptr;
     std::string dbname = path_ + Name();
     Status s = DB::Open(GetOptions(), dbname, &db);
     std::unique_ptr<DB> db_guard(db);
@@ -182,6 +182,19 @@ class SanityTestLZ4HCCompression : public SanityTest {
   Options options_;
 };
 
+class SanityTestZSTDCompression : public SanityTest {
+ public:
+  explicit SanityTestZSTDCompression(const std::string& path)
+      : SanityTest(path) {
+    options_.compression = kZSTDNotFinalCompression;
+  }
+  virtual Options GetOptions() const override { return options_; }
+  virtual std::string Name() const override { return "ZSTDCompression"; }
+
+ private:
+  Options options_;
+};
+
 #ifndef ROCKSDB_LITE
 class SanityTestPlainTableFactory : public SanityTest {
  public:
@@ -218,11 +231,13 @@ class SanityTestBloomFilter : public SanityTest {
 namespace {
 bool RunSanityTests(const std::string& command, const std::string& path) {
   std::vector<SanityTest*> sanity_tests = {
-      new SanityTestBasic(path), new SanityTestSpecialComparator(path),
+      new SanityTestBasic(path),
+      new SanityTestSpecialComparator(path),
       new SanityTestZlibCompression(path),
       new SanityTestZlibCompressionVersion2(path),
       new SanityTestLZ4Compression(path),
       new SanityTestLZ4HCCompression(path),
+      new SanityTestZSTDCompression(path),
 #ifndef ROCKSDB_LITE
       new SanityTestPlainTableFactory(path),
 #endif  // ROCKSDB_LITE

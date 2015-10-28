@@ -415,12 +415,6 @@ Status HdfsEnv::NewWritableFile(const std::string& fname,
   return Status::OK();
 }
 
-Status HdfsEnv::NewRandomRWFile(const std::string& fname,
-                                unique_ptr<RandomRWFile>* result,
-                                const EnvOptions& options) {
-  return Status::NotSupported("NewRandomRWFile not supported on HdfsEnv");
-}
-
 class HdfsDirectory : public Directory {
  public:
   explicit HdfsDirectory(int fd) : fd_(fd) {}
@@ -448,20 +442,18 @@ Status HdfsEnv::NewDirectory(const std::string& name,
   }
 }
 
-bool HdfsEnv::FileExists(const std::string& fname) {
-
+Status HdfsEnv::FileExists(const std::string& fname) {
   int value = hdfsExists(fileSys_, fname.c_str());
   switch (value) {
     case HDFS_EXISTS:
-    return true;
+      return Status::OK();
     case HDFS_DOESNT_EXIST:
-      return false;
+      return Status::NotFound();
     default:  // anything else should be an error
       Log(InfoLogLevel::FATAL_LEVEL,
           mylog, "FileExists hdfsExists call failed");
-      throw HdfsFatalException("hdfsExists call failed with error " +
-                               ToString(value) + " on path " + fname +
-                               ".\n");
+      return Status::IOError("hdfsExists call failed with error " +
+                             ToString(value) + " on path " + fname + ".\n");
   }
 }
 

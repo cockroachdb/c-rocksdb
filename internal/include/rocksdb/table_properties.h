@@ -3,6 +3,7 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 #pragma once
 
+#include <stdint.h>
 #include <string>
 #include <map>
 #include "rocksdb/status.h"
@@ -60,6 +61,10 @@ struct TableProperties {
   //   @prop_delim: delimiter for each property.
   std::string ToString(const std::string& prop_delim = "; ",
                        const std::string& kv_delim = "=") const;
+
+  // Aggregate the numerical member variables of the specified
+  // TableProperties.
+  void Add(const TableProperties& tp);
 };
 
 // table properties' human-readable names in the property block.
@@ -86,10 +91,10 @@ enum EntryType {
 };
 
 // `TablePropertiesCollector` provides the mechanism for users to collect
-// their own interested properties. This class is essentially a collection
-// of callback functions that will be invoked during table building.
-// It is construced with TablePropertiesCollectorFactory. The methods don't
-// need to be thread-safe, as we will create exactly one
+// their own properties that they are interested in. This class is essentially
+// a collection of callback functions that will be invoked during table
+// building. It is construced with TablePropertiesCollectorFactory. The methods
+// don't need to be thread-safe, as we will create exactly one
 // TablePropertiesCollector object per table and then call it sequentially
 class TablePropertiesCollector {
  public:
@@ -113,7 +118,7 @@ class TablePropertiesCollector {
   virtual Status AddUserKey(const Slice& key, const Slice& value,
                             EntryType type, SequenceNumber seq,
                             uint64_t file_size) {
-    // For backward-compatible.
+    // For backwards-compatibility.
     return Add(key, value);
   }
 

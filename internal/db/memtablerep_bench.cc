@@ -132,6 +132,8 @@ DEFINE_int64(seed, 0,
              "Seed base for random number generators. "
              "When 0 it is deterministic.");
 
+static rocksdb::Env* FLAGS_env = rocksdb::Env::Default();
+
 namespace rocksdb {
 
 namespace {
@@ -310,9 +312,10 @@ class ReadBenchmarkThread : public BenchmarkThread {
     assert(callback_args != nullptr);
     uint32_t key_length;
     const char* key_ptr = GetVarint32Ptr(entry, entry + 5, &key_length);
-    if ((callback_args->comparator)->user_comparator()->Compare(
-            Slice(key_ptr, key_length - 8), callback_args->key->user_key()) ==
-        0) {
+    if ((callback_args->comparator)
+            ->user_comparator()
+            ->Equal(Slice(key_ptr, key_length - 8),
+                    callback_args->key->user_key())) {
       callback_args->found = true;
     }
     return false;

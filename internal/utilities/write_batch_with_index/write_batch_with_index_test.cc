@@ -971,7 +971,7 @@ TEST_F(WriteBatchWithIndexTest, TestGetFromBatchMerge) {
 
   DestroyDB(dbname, options);
   Status s = DB::Open(options, dbname, &db);
-  assert(s.ok());
+  ASSERT_OK(s);
 
   ColumnFamilyHandle* column_family = db->DefaultColumnFamily();
   WriteBatchWithIndex batch;
@@ -1009,6 +1009,66 @@ TEST_F(WriteBatchWithIndexTest, TestGetFromBatchMerge) {
   DestroyDB(dbname, options);
 }
 
+TEST_F(WriteBatchWithIndexTest, TestGetFromBatchMerge2) {
+  DB* db;
+  Options options;
+  options.merge_operator = MergeOperators::CreateFromStringId("stringappend");
+  options.create_if_missing = true;
+
+  std::string dbname = test::TmpDir() + "/write_batch_with_index_test";
+
+  DestroyDB(dbname, options);
+  Status s = DB::Open(options, dbname, &db);
+  ASSERT_OK(s);
+
+  ColumnFamilyHandle* column_family = db->DefaultColumnFamily();
+
+  // Test batch with overwrite_key=true
+  WriteBatchWithIndex batch(BytewiseComparator(), 0, true);
+  std::string value;
+
+  s = batch.GetFromBatch(column_family, options, "X", &value);
+  ASSERT_TRUE(s.IsNotFound());
+
+  batch.Put(column_family, "X", "x");
+  s = batch.GetFromBatch(column_family, options, "X", &value);
+  ASSERT_OK(s);
+  ASSERT_EQ("x", value);
+
+  batch.Put(column_family, "X", "x2");
+  s = batch.GetFromBatch(column_family, options, "X", &value);
+  ASSERT_OK(s);
+  ASSERT_EQ("x2", value);
+
+  batch.Merge(column_family, "X", "aaa");
+  s = batch.GetFromBatch(column_family, options, "X", &value);
+  ASSERT_TRUE(s.IsMergeInProgress());
+
+  batch.Merge(column_family, "X", "bbb");
+  s = batch.GetFromBatch(column_family, options, "X", &value);
+  ASSERT_TRUE(s.IsMergeInProgress());
+
+  batch.Put(column_family, "X", "x3");
+  s = batch.GetFromBatch(column_family, options, "X", &value);
+  ASSERT_OK(s);
+  ASSERT_EQ("x3", value);
+
+  batch.Merge(column_family, "X", "ccc");
+  s = batch.GetFromBatch(column_family, options, "X", &value);
+  ASSERT_TRUE(s.IsMergeInProgress());
+
+  batch.Delete(column_family, "X");
+  s = batch.GetFromBatch(column_family, options, "X", &value);
+  ASSERT_TRUE(s.IsNotFound());
+
+  batch.Merge(column_family, "X", "ddd");
+  s = batch.GetFromBatch(column_family, options, "X", &value);
+  ASSERT_TRUE(s.IsMergeInProgress());
+
+  delete db;
+  DestroyDB(dbname, options);
+}
+
 TEST_F(WriteBatchWithIndexTest, TestGetFromBatchAndDB) {
   DB* db;
   Options options;
@@ -1017,7 +1077,7 @@ TEST_F(WriteBatchWithIndexTest, TestGetFromBatchAndDB) {
 
   DestroyDB(dbname, options);
   Status s = DB::Open(options, dbname, &db);
-  assert(s.ok());
+  ASSERT_OK(s);
 
   WriteBatchWithIndex batch;
   ReadOptions read_options;
@@ -1181,6 +1241,54 @@ TEST_F(WriteBatchWithIndexTest, TestGetFromBatchAndDBMerge) {
   ASSERT_EQ("e0", value);
 
   db->ReleaseSnapshot(snapshot);
+  delete db;
+  DestroyDB(dbname, options);
+}
+
+TEST_F(WriteBatchWithIndexTest, TestGetFromBatchAndDBMerge2) {
+  DB* db;
+  Options options;
+
+  options.create_if_missing = true;
+  std::string dbname = test::TmpDir() + "/write_batch_with_index_test";
+
+  options.merge_operator = MergeOperators::CreateFromStringId("stringappend");
+
+  DestroyDB(dbname, options);
+  Status s = DB::Open(options, dbname, &db);
+  assert(s.ok());
+
+  // Test batch with overwrite_key=true
+  WriteBatchWithIndex batch(BytewiseComparator(), 0, true);
+
+  ReadOptions read_options;
+  WriteOptions write_options;
+  std::string value;
+
+  s = batch.GetFromBatchAndDB(db, read_options, "A", &value);
+  ASSERT_TRUE(s.IsNotFound());
+
+  batch.Merge("A", "xxx");
+
+  s = batch.GetFromBatchAndDB(db, read_options, "A", &value);
+  ASSERT_TRUE(s.IsMergeInProgress());
+
+  batch.Merge("A", "yyy");
+
+  s = batch.GetFromBatchAndDB(db, read_options, "A", &value);
+  ASSERT_TRUE(s.IsMergeInProgress());
+
+  s = db->Put(write_options, "A", "a0");
+  ASSERT_OK(s);
+
+  s = batch.GetFromBatchAndDB(db, read_options, "A", &value);
+  ASSERT_TRUE(s.IsMergeInProgress());
+
+  batch.Delete("A");
+
+  s = batch.GetFromBatchAndDB(db, read_options, "A", &value);
+  ASSERT_TRUE(s.IsNotFound());
+
   delete db;
   DestroyDB(dbname, options);
 }
@@ -1364,6 +1472,150 @@ TEST_F(WriteBatchWithIndexTest, MutateWhileIteratingBaseStressTest) {
     }
   }
 }
+
+static std::string PrintContents(WriteBatchWithIndex* batch,
+                                 ColumnFamilyHandle* column_family) {
+  std::string result;
+
+  WBWIIterator* iter;
+  if (column_family == nullptr) {
+    iter = batch->NewIterator();
+  } else {
+    iter = batch->NewIterator(column_family);
+  }
+
+  iter->SeekToFirst();
+  while (iter->Valid()) {
+    WriteEntry e = iter->Entry();
+
+    if (e.type == kPutRecord) {
+      result.append("PUT(");
+      result.append(e.key.ToString());
+      result.append("):");
+      result.append(e.value.ToString());
+    } else if (e.type == kMergeRecord) {
+      result.append("MERGE(");
+      result.append(e.key.ToString());
+      result.append("):");
+      result.append(e.value.ToString());
+    } else {
+      assert(e.type == kDeleteRecord);
+      result.append("DEL(");
+      result.append(e.key.ToString());
+      result.append(")");
+    }
+
+    result.append(",");
+    iter->Next();
+  }
+
+  delete iter;
+  return result;
+}
+
+TEST_F(WriteBatchWithIndexTest, SavePointTest) {
+  WriteBatchWithIndex batch;
+  ColumnFamilyHandleImplDummy cf1(1, BytewiseComparator());
+  Status s;
+
+  batch.Put("A", "a");
+  batch.Put("B", "b");
+  batch.Put("A", "aa");
+  batch.Put(&cf1, "A", "a1");
+  batch.Delete(&cf1, "B");
+  batch.Put(&cf1, "C", "c1");
+
+  batch.SetSavePoint();
+
+  batch.Put("C", "cc");
+  batch.Put("B", "bb");
+  batch.Delete("A");
+  batch.Put(&cf1, "B", "b1");
+  batch.Delete(&cf1, "A");
+  batch.SetSavePoint();
+
+  batch.Put("A", "aaa");
+  batch.Put("A", "xxx");
+  batch.Delete("B");
+  batch.Put(&cf1, "B", "b2");
+  batch.Delete(&cf1, "C");
+  batch.SetSavePoint();
+  batch.SetSavePoint();
+  batch.Delete("D");
+  batch.Delete(&cf1, "D");
+
+  ASSERT_EQ(
+      "PUT(A):a,PUT(A):aa,DEL(A),PUT(A):aaa,PUT(A):xxx,PUT(B):b,PUT(B):bb,DEL("
+      "B)"
+      ",PUT(C):cc,DEL(D),",
+      PrintContents(&batch, nullptr));
+
+  ASSERT_EQ(
+      "PUT(A):a1,DEL(A),DEL(B),PUT(B):b1,PUT(B):b2,PUT(C):c1,DEL(C),"
+      "DEL(D),",
+      PrintContents(&batch, &cf1));
+
+  ASSERT_OK(batch.RollbackToSavePoint());
+  ASSERT_EQ(
+      "PUT(A):a,PUT(A):aa,DEL(A),PUT(A):aaa,PUT(A):xxx,PUT(B):b,PUT(B):bb,DEL("
+      "B)"
+      ",PUT(C):cc,",
+      PrintContents(&batch, nullptr));
+
+  ASSERT_EQ("PUT(A):a1,DEL(A),DEL(B),PUT(B):b1,PUT(B):b2,PUT(C):c1,DEL(C),",
+            PrintContents(&batch, &cf1));
+
+  ASSERT_OK(batch.RollbackToSavePoint());
+  ASSERT_EQ(
+      "PUT(A):a,PUT(A):aa,DEL(A),PUT(A):aaa,PUT(A):xxx,PUT(B):b,PUT(B):bb,DEL("
+      "B)"
+      ",PUT(C):cc,",
+      PrintContents(&batch, nullptr));
+
+  ASSERT_EQ("PUT(A):a1,DEL(A),DEL(B),PUT(B):b1,PUT(B):b2,PUT(C):c1,DEL(C),",
+            PrintContents(&batch, &cf1));
+
+  ASSERT_OK(batch.RollbackToSavePoint());
+  ASSERT_EQ("PUT(A):a,PUT(A):aa,DEL(A),PUT(B):b,PUT(B):bb,PUT(C):cc,",
+            PrintContents(&batch, nullptr));
+
+  ASSERT_EQ("PUT(A):a1,DEL(A),DEL(B),PUT(B):b1,PUT(C):c1,",
+            PrintContents(&batch, &cf1));
+
+  batch.SetSavePoint();
+  batch.Put("X", "x");
+
+  ASSERT_EQ("PUT(A):a,PUT(A):aa,DEL(A),PUT(B):b,PUT(B):bb,PUT(C):cc,PUT(X):x,",
+            PrintContents(&batch, nullptr));
+
+  ASSERT_OK(batch.RollbackToSavePoint());
+  ASSERT_EQ("PUT(A):a,PUT(A):aa,DEL(A),PUT(B):b,PUT(B):bb,PUT(C):cc,",
+            PrintContents(&batch, nullptr));
+
+  ASSERT_EQ("PUT(A):a1,DEL(A),DEL(B),PUT(B):b1,PUT(C):c1,",
+            PrintContents(&batch, &cf1));
+
+  ASSERT_OK(batch.RollbackToSavePoint());
+  ASSERT_EQ("PUT(A):a,PUT(A):aa,PUT(B):b,", PrintContents(&batch, nullptr));
+
+  ASSERT_EQ("PUT(A):a1,DEL(B),PUT(C):c1,", PrintContents(&batch, &cf1));
+
+  s = batch.RollbackToSavePoint();
+  ASSERT_TRUE(s.IsNotFound());
+  ASSERT_EQ("PUT(A):a,PUT(A):aa,PUT(B):b,", PrintContents(&batch, nullptr));
+
+  ASSERT_EQ("PUT(A):a1,DEL(B),PUT(C):c1,", PrintContents(&batch, &cf1));
+
+  batch.SetSavePoint();
+
+  batch.Clear();
+  ASSERT_EQ("", PrintContents(&batch, nullptr));
+  ASSERT_EQ("", PrintContents(&batch, &cf1));
+
+  s = batch.RollbackToSavePoint();
+  ASSERT_TRUE(s.IsNotFound());
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {

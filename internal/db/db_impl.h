@@ -11,21 +11,25 @@
 #include <atomic>
 #include <deque>
 #include <limits>
+#include <list>
+#include <list>
 #include <set>
-#include <list>
-#include <utility>
-#include <list>
-#include <vector>
 #include <string>
+#include <utility>
+#include <vector>
 
-#include "db/dbformat.h"
-#include "db/log_writer.h"
-#include "db/snapshot.h"
 #include "db/column_family.h"
 #include "db/compaction_job.h"
+#include "db/dbformat.h"
 #include "db/flush_job.h"
+#include "db/flush_scheduler.h"
+#include "db/internal_stats.h"
+#include "db/log_writer.h"
+#include "db/snapshot_impl.h"
 #include "db/version_edit.h"
 #include "db/wal_manager.h"
+#include "db/write_controller.h"
+#include "db/write_thread.h"
 #include "db/writebuffer.h"
 #include "memtable_list.h"
 #include "port/port.h"
@@ -36,15 +40,11 @@
 #include "util/autovector.h"
 #include "util/event_logger.h"
 #include "util/hash.h"
-#include "util/stop_watch.h"
-#include "util/thread_local.h"
-#include "util/scoped_arena_iterator.h"
 #include "util/hash.h"
 #include "util/instrumented_mutex.h"
-#include "db/internal_stats.h"
-#include "db/write_controller.h"
-#include "db/flush_scheduler.h"
-#include "db/write_thread.h"
+#include "util/scoped_arena_iterator.h"
+#include "util/stop_watch.h"
+#include "util/thread_local.h"
 
 namespace rocksdb {
 
@@ -158,6 +158,7 @@ class DBImpl : public DB {
   using DB::Flush;
   virtual Status Flush(const FlushOptions& options,
                        ColumnFamilyHandle* column_family) override;
+  virtual Status SyncWAL() override;
 
   virtual SequenceNumber GetLatestSequenceNumber() const override;
 
@@ -325,6 +326,9 @@ class DBImpl : public DB {
   // mutex is held.
   SuperVersion* GetAndRefSuperVersion(uint32_t column_family_id);
 
+  // Same as above, should called without mutex held and not on write thread.
+  SuperVersion* GetAndRefSuperVersionUnlocked(uint32_t column_family_id);
+
   // Un-reference the super version and return it to thread local cache if
   // needed. If it is the last reference of the super version. Clean it up
   // after un-referencing it.
@@ -335,10 +339,17 @@ class DBImpl : public DB {
   // REQUIRED: this function should only be called on the write thread.
   void ReturnAndCleanupSuperVersion(uint32_t colun_family_id, SuperVersion* sv);
 
+  // Same as above, should called without mutex held and not on write thread.
+  void ReturnAndCleanupSuperVersionUnlocked(uint32_t colun_family_id,
+                                            SuperVersion* sv);
+
   // REQUIRED: this function should only be called on the write thread or if the
   // mutex is held.  Return value only valid until next call to this function or
   // mutex is released.
   ColumnFamilyHandle* GetColumnFamilyHandle(uint32_t column_family_id);
+
+  // Same as above, should called without mutex held and not on write thread.
+  ColumnFamilyHandle* GetColumnFamilyHandleUnlocked(uint32_t column_family_id);
 
  protected:
   Env* const env_;
@@ -437,7 +448,7 @@ class DBImpl : public DB {
 
   // num_bytes: for slowdown case, delay time is calculated based on
   //            `num_bytes` going through.
-  Status DelayWrite(uint64_t num_bytes, uint64_t expiration_time);
+  Status DelayWrite(uint64_t num_bytes);
 
   Status ScheduleFlushes(WriteContext* context);
 
@@ -474,13 +485,6 @@ class DBImpl : public DB {
   Status BackgroundFlush(bool* madeProgress, JobContext* job_context,
                          LogBuffer* log_buffer);
 
-  // This function is called as part of compaction. It enables Flush process to
-  // preempt compaction, since it's higher prioirty
-  uint64_t CallFlushDuringCompaction(ColumnFamilyData* cfd,
-                                     const MutableCFOptions& mutable_cf_options,
-                                     JobContext* job_context,
-                                     LogBuffer* log_buffer);
-
   void PrintStatistics();
 
   // dump rocksdb.stats to LOG
@@ -502,6 +506,9 @@ class DBImpl : public DB {
   void AddToFlushQueue(ColumnFamilyData* cfd);
   ColumnFamilyData* PopFirstFromFlushQueue();
 
+  // helper function to call after some of the logs_ were synced
+  void MarkLogsSynced(uint64_t up_to, bool synced_dir, const Status& status);
+
   // table_cache_ provides its own synchronization
   std::shared_ptr<Cache> table_cache_;
 
@@ -521,7 +528,6 @@ class DBImpl : public DB {
   // * whenever there is an error in background flush or compaction
   InstrumentedCondVar bg_cv_;
   uint64_t logfile_number_;
-  unique_ptr<log::Writer> log_;
   bool log_dir_synced_;
   bool log_empty_;
   ColumnFamilyHandleImpl* default_cf_handle_;
@@ -529,13 +535,45 @@ class DBImpl : public DB {
   unique_ptr<ColumnFamilyMemTablesImpl> column_family_memtables_;
   struct LogFileNumberSize {
     explicit LogFileNumberSize(uint64_t _number)
-        : number(_number), size(0), getting_flushed(false) {}
+        : number(_number) {}
     void AddSize(uint64_t new_size) { size += new_size; }
     uint64_t number;
-    uint64_t size;
-    bool getting_flushed;
+    uint64_t size = 0;
+    bool getting_flushed = false;
+  };
+  struct LogWriterNumber {
+    // pass ownership of _writer
+    LogWriterNumber(uint64_t _number, log::Writer* _writer)
+        : number(_number), writer(_writer) {}
+
+    log::Writer* ReleaseWriter() {
+      auto* w = writer;
+      writer = nullptr;
+      return w;
+    }
+    void ClearWriter() {
+      delete writer;
+      writer = nullptr;
+    }
+
+    uint64_t number;
+    // Visual Studio doesn't support deque's member to be noncopyable because
+    // of a unique_ptr as a member.
+    log::Writer* writer;  // own
+    // true for some prefix of logs_
+    bool getting_synced = false;
   };
   std::deque<LogFileNumberSize> alive_log_files_;
+  // Log files that aren't fully synced, and the current log file.
+  // Synchronization:
+  //  - push_back() is done from write thread with locked mutex_,
+  //  - pop_front() is done from any thread with locked mutex_,
+  //  - back() and items with getting_synced=true are not popped,
+  //  - it follows that write thread with unlocked mutex_ can safely access
+  //    back() and items with getting_synced=true.
+  std::deque<LogWriterNumber> logs_;
+  // Signaled when getting_synced becomes false for some of the logs_.
+  InstrumentedCondVar log_sync_cv_;
   uint64_t total_log_size_;
   // only used for dynamically adjusting max_total_wal_size. it is a sum of
   // [write_buffer_size * max_write_buffer_number] over all column families
@@ -683,6 +721,9 @@ class DBImpl : public DB {
   bool flush_on_destroy_; // Used when disableWAL is true.
 
   static const int KEEP_LOG_FILE_NUM = 1000;
+  // MSVC version 1800 still does not have constexpr for ::max()
+  static const uint64_t kNoTimeOut = port::kMaxUint64;
+
   std::string db_absolute_path_;
 
   // The options to access storage files

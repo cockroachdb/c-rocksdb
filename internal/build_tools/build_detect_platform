@@ -8,6 +8,7 @@
 #   CXX                         C++ Compiler path
 #   PLATFORM_LDFLAGS            Linker flags
 #   JAVA_LDFLAGS                Linker flags for RocksDBJava
+#   JAVA_STATIC_LDFLAGS         Linker flags for RocksDBJava static build
 #   PLATFORM_SHARED_EXT         Extension for shared libraries
 #   PLATFORM_SHARED_LDFLAGS     Flags for building shared library
 #   PLATFORM_SHARED_CFLAGS      Flags for compiling objects for shared library
@@ -22,6 +23,7 @@
 #       -DLEVELDB_PLATFORM_NOATOMIC if it is not
 #       -DSNAPPY                    if the Snappy library is present
 #       -DLZ4                       if the LZ4 library is present
+#       -DZSTD                      if the ZSTD library is present
 #       -DNUMA                      if the NUMA library is present
 #
 # Using gflags in rocksdb:
@@ -180,6 +182,7 @@ esac
 
 PLATFORM_CXXFLAGS="$PLATFORM_CXXFLAGS ${CXXFLAGS}"
 JAVA_LDFLAGS="$PLATFORM_LDFLAGS"
+JAVA_STATIC_LDFLAGS="$PLATFORM_LDFLAGS"
 
 if [ "$CROSS_COMPILE" = "true" -o "$FBCODE_BUILD" = "true" ]; then
     # Cross-compiling; do not try any compilation tests.
@@ -267,6 +270,17 @@ EOF
         COMMON_FLAGS="$COMMON_FLAGS -DLZ4"
         PLATFORM_LDFLAGS="$PLATFORM_LDFLAGS -llz4"
         JAVA_LDFLAGS="$JAVA_LDFLAGS -llz4"
+    fi
+
+    # Test whether zstd library is installed
+    $CXX $CFLAGS $COMMON_FLAGS -x c++ - -o /dev/null 2>/dev/null  <<EOF
+      #include <zstd.h>
+      int main() {}
+EOF
+    if [ "$?" = 0 ]; then
+        COMMON_FLAGS="$COMMON_FLAGS -DZSTD"
+        PLATFORM_LDFLAGS="$PLATFORM_LDFLAGS -lzstd"
+        JAVA_LDFLAGS="$JAVA_LDFLAGS -lzstd"
     fi
 
     # Test whether numa is available
@@ -362,6 +376,7 @@ echo "CXX=$CXX" >> "$OUTPUT"
 echo "PLATFORM=$PLATFORM" >> "$OUTPUT"
 echo "PLATFORM_LDFLAGS=$PLATFORM_LDFLAGS" >> "$OUTPUT"
 echo "JAVA_LDFLAGS=$JAVA_LDFLAGS" >> "$OUTPUT"
+echo "JAVA_STATIC_LDFLAGS=$JAVA_STATIC_LDFLAGS" >> "$OUTPUT"
 echo "VALGRIND_VER=$VALGRIND_VER" >> "$OUTPUT"
 echo "PLATFORM_CCFLAGS=$PLATFORM_CCFLAGS" >> "$OUTPUT"
 echo "PLATFORM_CXXFLAGS=$PLATFORM_CXXFLAGS" >> "$OUTPUT"
