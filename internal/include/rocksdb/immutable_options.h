@@ -35,8 +35,6 @@ struct ImmutableCFOptions {
 
   CompactionFilterFactory* compaction_filter_factory;
 
-  CompactionFilterFactoryV2* compaction_filter_factory_v2;
-
   bool inplace_update_support;
 
   UpdateStatus (*inplace_callback)(char* existing_value,
@@ -90,6 +88,10 @@ struct ImmutableCFOptions {
   bool level_compaction_dynamic_level_bytes;
 
   Options::AccessHint access_hint_on_compaction_start;
+
+  bool new_table_reader_for_compaction_inputs;
+
+  size_t compaction_readahead_size;
 
   int num_levels;
 

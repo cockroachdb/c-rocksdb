@@ -30,7 +30,6 @@ class Version;
 class ColumnFamilyData;
 class VersionStorageInfo;
 class CompactionFilter;
-class CompactionFilterV2;
 
 // A Compaction encapsulates information about a compaction.
 class Compaction {
@@ -109,29 +108,28 @@ class Compaction {
   }
 
   // Maximum size of files to build during this compaction.
-  uint64_t MaxOutputFileSize() const { return max_output_file_size_; }
+  uint64_t max_output_file_size() const { return max_output_file_size_; }
 
   // What compression for output
-  CompressionType OutputCompressionType() const { return output_compression_; }
+  CompressionType output_compression() const { return output_compression_; }
 
   // Whether need to write output file to second DB path.
-  uint32_t GetOutputPathId() const { return output_path_id_; }
+  uint32_t output_path_id() const { return output_path_id_; }
 
   // Is this a trivial compaction that can be implemented by just
   // moving a single input file to the next level (no merging or splitting)
   bool IsTrivialMove() const;
 
   // If true, then the compaction can be done by simply deleting input files.
-  bool IsDeletionCompaction() const {
-    return deletion_compaction_;
-  }
+  bool deletion_compaction() const { return deletion_compaction_; }
 
   // Add all inputs to this compaction as delete operations to *edit.
   void AddInputDeletions(VersionEdit* edit);
 
   // Returns true if the available information we have guarantees that
   // the input "user_key" does not exist in any level beyond "output_level()".
-  bool KeyNotExistsBeyondOutputLevel(const Slice& user_key);
+  bool KeyNotExistsBeyondOutputLevel(const Slice& user_key,
+                                     std::vector<size_t>* level_ptrs) const;
 
   // Returns true iff we should stop building the current output
   // before processing "internal_key".
@@ -150,13 +148,29 @@ class Compaction {
   double score() const { return score_; }
 
   // Is this compaction creating a file in the bottom most level?
-  bool BottomMostLevel() { return bottommost_level_; }
+  bool bottommost_level() { return bottommost_level_; }
 
   // Does this compaction include all sst files?
-  bool IsFullCompaction() { return is_full_compaction_; }
+  bool is_full_compaction() { return is_full_compaction_; }
 
   // Was this compaction triggered manually by the client?
-  bool IsManualCompaction() { return is_manual_compaction_; }
+  bool is_manual_compaction() { return is_manual_compaction_; }
+
+  // Used when allow_trivial_move option is set in
+  // Universal compaction. If all the input files are
+  // non overlapping, then is_trivial_move_ variable
+  // will be set true, else false
+  void set_is_trivial_move(bool trivial_move) {
+    is_trivial_move_ = trivial_move;
+  }
+
+  // Used when allow_trivial_move option is set in
+  // Universal compaction. Returns true, if the input files
+  // are non-overlapping and can be trivially moved.
+  bool is_trivial_move() { return is_trivial_move_; }
+
+  // How many total levels are there?
+  int number_levels() const { return number_levels_; }
 
   // Return the MutableCFOptions that should be used throughout the compaction
   // procedure
@@ -184,8 +198,11 @@ class Compaction {
   // Create a CompactionFilter from compaction_filter_factory
   std::unique_ptr<CompactionFilter> CreateCompactionFilter() const;
 
-  // Create a CompactionFilterV2 from compaction_filter_factory_v2
-  std::unique_ptr<CompactionFilterV2> CreateCompactionFilterV2() const;
+  // Is the input level corresponding to output_level_ empty?
+  bool IsOutputLevelEmpty() const;
+
+  // Should this compaction be broken up into smaller ones run in parallel?
+  bool ShouldFormSubcompactions() const;
 
  private:
   // mark (or clear) all files that are being compacted
@@ -238,12 +255,9 @@ class Compaction {
   // Is this compaction requested by the client?
   const bool is_manual_compaction_;
 
-  // "level_ptrs_" holds indices into "input_version_->levels_", where each
-  // index remembers which file of an associated level we are currently used
-  // to check KeyNotExistsBeyondOutputLevel() for deletion operation.
-  // As it is for checking KeyNotExistsBeyondOutputLevel(), it only
-  // records indices for all levels beyond "output_level_".
-  std::vector<size_t> level_ptrs_;
+  // True if we can do trivial move in Universal multi level
+  // compaction
+  bool is_trivial_move_;
 
   // Does input compression match the output compression?
   bool InputCompressionMatchesOutput() const;

@@ -121,6 +121,10 @@ class VersionStorageInfo {
       const MutableCFOptions& mutable_cf_options,
       const CompactionOptionsFIFO& compaction_options_fifo);
 
+  // Estimate est_comp_needed_bytes_
+  void EstimateCompactionBytesNeeded(
+      const MutableCFOptions& mutable_cf_options);
+
   // This computes files_marked_for_compaction_ and is called by
   // ComputeCompactionScore()
   void ComputeFilesMarkedForCompaction();
@@ -185,12 +189,6 @@ class VersionStorageInfo {
   // REQUIRES: "*inputs" is a sorted list of non-overlapping files
   bool HasOverlappingUserKey(const std::vector<FileMetaData*>* inputs,
                              int level);
-
-  // Return the level at which we should place a new memtable compaction
-  // result that covers the range [smallest_user_key,largest_user_key].
-  int PickLevelForMemTableOutput(const MutableCFOptions& mutable_cf_options,
-                                 const Slice& smallest_user_key,
-                                 const Slice& largest_user_key);
 
   int num_levels() const { return num_levels_; }
 
@@ -318,6 +316,13 @@ class VersionStorageInfo {
   void CalculateBaseBytes(const ImmutableCFOptions& ioptions,
                           const MutableCFOptions& options);
 
+  // Returns an estimate of the amount of live data in bytes.
+  uint64_t EstimateLiveDataSize() const;
+
+  uint64_t estimated_compaction_needed_bytes() const {
+    return estimated_compaction_needed_bytes_;
+  }
+
  private:
   const InternalKeyComparator* internal_comparator_;
   const Comparator* user_comparator_;
@@ -392,6 +397,9 @@ class VersionStorageInfo {
   uint64_t accumulated_num_deletions_;
   // the number of samples
   uint64_t num_samples_;
+  // Estimated bytes needed to be compacted until all levels' size is down to
+  // target sizes.
+  uint64_t estimated_compaction_needed_bytes_;
 
   bool finalized_;
 
@@ -420,7 +428,8 @@ class Version {
 
   // Loads some stats information from files. Call without mutex held. It needs
   // to be called before applying the version to the version set.
-  void PrepareApply(const MutableCFOptions& mutable_cf_options);
+  void PrepareApply(const MutableCFOptions& mutable_cf_options,
+                    bool update_stats);
 
   // Reference count management (so Versions do not disappear out from
   // under live iterators)
@@ -452,6 +461,14 @@ class Version {
   // The keys of `props` are the sst file name, the values of `props` are the
   // tables' propertis, represented as shared_ptr.
   Status GetPropertiesOfAllTables(TablePropertiesCollection* props);
+
+  Status GetPropertiesOfAllTables(TablePropertiesCollection* props, int level);
+
+  // REQUIRES: lock is held
+  // On success, "tp" will contains the aggregated table property amoug
+  // the table properties of all sst files in this version.
+  Status GetAggregatedTableProperties(
+      std::shared_ptr<const TableProperties>* tp, int level = -1);
 
   uint64_t GetEstimatedActiveKeys() {
     return storage_info_.GetEstimatedActiveKeys();
@@ -493,7 +510,7 @@ class Version {
 
   // Update the accumulated stats associated with the current version.
   // This accumulated stats will be used in compaction.
-  void UpdateAccumulatedStats();
+  void UpdateAccumulatedStats(bool update_stats);
 
   // Sort all files for this version based on their file size and
   // record results in files_by_size_. The largest files are listed first.
@@ -572,7 +589,7 @@ class VersionSet {
 
   // printf contents (for debugging)
   Status DumpManifest(Options& options, std::string& manifestFileName,
-                      bool verbose, bool hex = false);
+                      bool verbose, bool hex = false, bool json = false);
 
 #endif  // ROCKSDB_LITE
 
@@ -629,7 +646,10 @@ class VersionSet {
   void AddLiveFiles(std::vector<FileDescriptor>* live_list);
 
   // Return the approximate size of data to be scanned for range [start, end)
-  uint64_t ApproximateSize(Version* v, const Slice& start, const Slice& end);
+  // in levels [start_level, end_level). If end_level == 0 it will search
+  // through all non-empty levels
+  uint64_t ApproximateSize(Version* v, const Slice& start, const Slice& end,
+                           int start_level = 0, int end_level = -1);
 
   // Return the size of the current manifest file
   uint64_t manifest_file_size() const { return manifest_file_size_; }
@@ -652,6 +672,8 @@ class VersionSet {
   const EnvOptions& env_options() { return env_options_; }
 
   static uint64_t GetNumLiveVersions(Version* dummy_versions);
+
+  static uint64_t GetTotalSstFilesSize(Version* dummy_versions);
 
  private:
   struct ManifestWriter;

@@ -101,8 +101,7 @@ Compaction::Compaction(VersionStorageInfo* vstorage,
       score_(_score),
       bottommost_level_(IsBottommostLevel(output_level_, vstorage, inputs_)),
       is_full_compaction_(IsFullCompaction(vstorage, inputs_)),
-      is_manual_compaction_(_manual_compaction),
-      level_ptrs_(std::vector<size_t>(number_levels_, 0)) {
+      is_manual_compaction_(_manual_compaction) {
   MarkFilesBeingCompacted(true);
 
 #ifndef NDEBUG
@@ -160,15 +159,21 @@ bool Compaction::IsTrivialMove() const {
 
   if (is_manual_compaction_ &&
       (cfd_->ioptions()->compaction_filter != nullptr ||
-       cfd_->ioptions()->compaction_filter_factory != nullptr ||
-       cfd_->ioptions()->compaction_filter_factory_v2 != nullptr)) {
+       cfd_->ioptions()->compaction_filter_factory != nullptr)) {
     // This is a manual compaction and we have a compaction filter that should
     // be executed, we cannot do a trivial move
     return false;
   }
 
+  // Used in universal compaction, where trivial move can be done if the
+  // input files are non overlapping
+  if ((cfd_->ioptions()->compaction_options_universal.allow_trivial_move) &&
+      (output_level_ != 0)) {
+    return is_trivial_move_;
+  }
+
   return (start_level_ != output_level_ && num_input_levels() == 1 &&
-          input(0, 0)->fd.GetPathId() == GetOutputPathId() &&
+          input(0, 0)->fd.GetPathId() == output_path_id() &&
           InputCompressionMatchesOutput() &&
           TotalFileSize(grandparents_) <= max_grandparent_overlap_bytes_);
 }
@@ -181,8 +186,11 @@ void Compaction::AddInputDeletions(VersionEdit* out_edit) {
   }
 }
 
-bool Compaction::KeyNotExistsBeyondOutputLevel(const Slice& user_key) {
+bool Compaction::KeyNotExistsBeyondOutputLevel(
+    const Slice& user_key, std::vector<size_t>* level_ptrs) const {
   assert(input_version_ != nullptr);
+  assert(level_ptrs != nullptr);
+  assert(level_ptrs->size() == static_cast<size_t>(number_levels_));
   assert(cfd_->ioptions()->compaction_style != kCompactionStyleFIFO);
   if (cfd_->ioptions()->compaction_style == kCompactionStyleUniversal) {
     return bottommost_level_;
@@ -192,8 +200,8 @@ bool Compaction::KeyNotExistsBeyondOutputLevel(const Slice& user_key) {
   for (int lvl = output_level_ + 1; lvl < number_levels_; lvl++) {
     const std::vector<FileMetaData*>& files =
         input_version_->storage_info()->LevelFiles(lvl);
-    for (; level_ptrs_[lvl] < files.size(); ) {
-      FileMetaData* f = files[level_ptrs_[lvl]];
+    for (; level_ptrs->at(lvl) < files.size(); level_ptrs->at(lvl)++) {
+      auto* f = files[level_ptrs->at(lvl)];
       if (user_cmp->Compare(user_key, f->largest.user_key()) <= 0) {
         // We've advanced far enough
         if (user_cmp->Compare(user_key, f->smallest.user_key()) >= 0) {
@@ -203,7 +211,6 @@ bool Compaction::KeyNotExistsBeyondOutputLevel(const Slice& user_key) {
         }
         break;
       }
-      level_ptrs_[lvl]++;
     }
   }
   return true;
@@ -264,7 +271,8 @@ const char* Compaction::InputLevelSummary(
       is_first = false;
     }
     len += snprintf(scratch->buffer + len, sizeof(scratch->buffer) - len,
-                    "%zu@%d", input_level.size(), input_level.level);
+                    "%" ROCKSDB_PRIszt "@%d", input_level.size(),
+                    input_level.level);
   }
   snprintf(scratch->buffer + len, sizeof(scratch->buffer) - len,
            " files to L%d", output_level());
@@ -369,18 +377,21 @@ std::unique_ptr<CompactionFilter> Compaction::CreateCompactionFilter() const {
       context);
 }
 
-std::unique_ptr<CompactionFilterV2>
-    Compaction::CreateCompactionFilterV2() const {
-  if (!cfd_->ioptions()->compaction_filter_factory_v2) {
-    return nullptr;
-  }
+bool Compaction::IsOutputLevelEmpty() const {
+  return inputs_.back().level != output_level_ || inputs_.back().empty();
+}
 
-  CompactionFilterContext context;
-  context.is_full_compaction = is_full_compaction_;
-  context.is_manual_compaction = is_manual_compaction_;
-  return
-    cfd_->ioptions()->compaction_filter_factory_v2->CreateCompactionFilterV2(
-        context);
+bool Compaction::ShouldFormSubcompactions() const {
+  if (mutable_cf_options_.max_subcompactions <= 1 || cfd_ == nullptr) {
+    return false;
+  }
+  if (cfd_->ioptions()->compaction_style == kCompactionStyleLevel) {
+    return start_level_ == 0 && !IsOutputLevelEmpty();
+  } else if (cfd_->ioptions()->compaction_style == kCompactionStyleUniversal) {
+    return number_levels_ > 1 && output_level_ > 0;
+  } else {
+    return false;
+  }
 }
 
 }  // namespace rocksdb

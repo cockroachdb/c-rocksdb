@@ -2,21 +2,22 @@
 //  This source code is licensed under the BSD-style license found in the
 //  LICENSE file in the root directory of this source tree. An additional grant
 //  of patent rights can be found in the PATENTS file in the same directory.
+#include "util/options_helper.h"
 
 #include <cassert>
 #include <cctype>
 #include <cstdlib>
 #include <unordered_set>
 #include "rocksdb/cache.h"
+#include "rocksdb/convenience.h"
 #include "rocksdb/filter_policy.h"
 #include "rocksdb/options.h"
 #include "rocksdb/rate_limiter.h"
 #include "rocksdb/slice_transform.h"
 #include "rocksdb/table.h"
-#include "rocksdb/utilities/convenience.h"
 #include "table/block_based_table_factory.h"
 #include "util/logging.h"
-#include "util/options_helper.h"
+#include "util/string_util.h"
 
 namespace rocksdb {
 
@@ -36,6 +37,8 @@ CompressionType ParseCompressionType(const std::string& type) {
     return kLZ4Compression;
   } else if (type == "kLZ4HCCompression") {
     return kLZ4HCCompression;
+  } else if (type == "kZSTDNotFinalCompression") {
+    return kZSTDNotFinalCompression;
   } else {
     throw std::invalid_argument("Unknown compression type: " + type);
   }
@@ -142,18 +145,105 @@ double ParseDouble(const std::string& value) {
 #endif
 }
 
+static const std::unordered_map<char, std::string>
+    compaction_style_to_string_map = {
+        {kCompactionStyleLevel, "kCompactionStyleLevel"},
+        {kCompactionStyleUniversal, "kCompactionStyleUniversal"},
+        {kCompactionStyleFIFO, "kCompactionStyleFIFO"},
+        {kCompactionStyleNone, "kCompactionStyleNone"}};
+
 CompactionStyle ParseCompactionStyle(const std::string& type) {
-  if (type == "kCompactionStyleLevel") {
-    return kCompactionStyleLevel;
-  } else if (type == "kCompactionStyleUniversal") {
-    return kCompactionStyleUniversal;
-  } else if (type == "kCompactionStyleFIFO") {
-    return kCompactionStyleFIFO;
-  } else {
-    throw std::invalid_argument("unknown compaction style: " + type);
+  for (auto const& entry : compaction_style_to_string_map) {
+    if (entry.second == type) {
+      return static_cast<CompactionStyle>(entry.first);
+    }
   }
+  throw std::invalid_argument("unknown compaction style: " + type);
   return kCompactionStyleLevel;
 }
+
+std::string CompactionStyleToString(const CompactionStyle style) {
+  auto iter = compaction_style_to_string_map.find(style);
+  assert(iter != compaction_style_to_string_map.end());
+  return iter->second;
+}
+
+bool ParseOptionHelper(char* opt_address, const OptionType& opt_type,
+                       const std::string& value) {
+  switch (opt_type) {
+    case OptionType::kBoolean:
+      *reinterpret_cast<bool*>(opt_address) = ParseBoolean("", value);
+      break;
+    case OptionType::kInt:
+      *reinterpret_cast<int*>(opt_address) = ParseInt(value);
+      break;
+    case OptionType::kUInt:
+      *reinterpret_cast<unsigned int*>(opt_address) = ParseUint32(value);
+      break;
+    case OptionType::kUInt32T:
+      *reinterpret_cast<uint32_t*>(opt_address) = ParseUint32(value);
+      break;
+    case OptionType::kUInt64T:
+      *reinterpret_cast<uint64_t*>(opt_address) = ParseUint64(value);
+      break;
+    case OptionType::kSizeT:
+      *reinterpret_cast<size_t*>(opt_address) = ParseSizeT(value);
+      break;
+    case OptionType::kString:
+      *reinterpret_cast<std::string*>(opt_address) = value;
+      break;
+    case OptionType::kDouble:
+      *reinterpret_cast<double*>(opt_address) = ParseDouble(value);
+      break;
+    case OptionType::kCompactionStyle:
+      *reinterpret_cast<CompactionStyle*>(opt_address) =
+          ParseCompactionStyle(value);
+      break;
+    default:
+      return false;
+  }
+  return true;
+}
+
+bool SerializeSingleOptionHelper(const char* opt_address,
+                                 const OptionType opt_type,
+                                 std::string* value) {
+  assert(value);
+  switch (opt_type) {
+    case OptionType::kBoolean:
+      *value = *(reinterpret_cast<const bool*>(opt_address)) ? "true" : "false";
+      break;
+    case OptionType::kInt:
+      *value = ToString(*(reinterpret_cast<const int*>(opt_address)));
+      break;
+    case OptionType::kUInt:
+      *value = ToString(*(reinterpret_cast<const unsigned int*>(opt_address)));
+      break;
+    case OptionType::kUInt32T:
+      *value = ToString(*(reinterpret_cast<const uint32_t*>(opt_address)));
+      break;
+    case OptionType::kUInt64T:
+      *value = ToString(*(reinterpret_cast<const uint64_t*>(opt_address)));
+      break;
+    case OptionType::kSizeT:
+      *value = ToString(*(reinterpret_cast<const size_t*>(opt_address)));
+      break;
+    case OptionType::kDouble:
+      *value = ToString(*(reinterpret_cast<const double*>(opt_address)));
+      break;
+    case OptionType::kString:
+      *value = *(reinterpret_cast<const std::string*>(opt_address));
+      break;
+    case OptionType::kCompactionStyle:
+      *value = CompactionStyleToString(
+          *(reinterpret_cast<const CompactionStyle*>(opt_address)));
+      break;
+    default:
+      return false;
+  }
+  return true;
+}
+
 }  // anonymouse namespace
 
 template<typename OptionsType>
@@ -228,8 +318,6 @@ bool ParseCompactionOptions(const std::string& name, const std::string& value,
         start = end + 1;
       }
     }
-  } else if (name == "max_mem_compaction_level") {
-    new_options->max_mem_compaction_level = ParseInt(value);
   } else if (name == "verify_checksums_in_compaction") {
     new_options->verify_checksums_in_compaction = ParseBoolean(name, value);
   } else {
@@ -277,6 +365,7 @@ Status GetMutableOptionsFromStrings(
 namespace {
 
 std::string trim(const std::string& str) {
+  if (str.empty()) return std::string();
   size_t start = 0;
   size_t end = str.size() - 1;
   while (isspace(str[start]) != 0 && start <= end) {
@@ -372,9 +461,21 @@ Status StringToMap(const std::string& opts_str,
 bool ParseColumnFamilyOption(const std::string& name, const std::string& value,
                              ColumnFamilyOptions* new_options) {
   try {
-    if (ParseMemtableOptions(name, value, new_options)) {
-    } else if (ParseCompactionOptions(name, value, new_options)) {
-    } else if (ParseMiscOptions(name, value, new_options)) {
+    if (name == "max_bytes_for_level_multiplier_additional") {
+      new_options->max_bytes_for_level_multiplier_additional.clear();
+      size_t start = 0;
+      while (true) {
+        size_t end = value.find(':', start);
+        if (end == std::string::npos) {
+          new_options->max_bytes_for_level_multiplier_additional.push_back(
+              ParseInt(value.substr(start)));
+          break;
+        } else {
+          new_options->max_bytes_for_level_multiplier_additional.push_back(
+              ParseInt(value.substr(start, end - start)));
+          start = end + 1;
+        }
+      }
     } else if (name == "block_based_table_factory") {
       // Nested options
       BlockBasedTableOptions table_opt, base_table_options;
@@ -389,10 +490,6 @@ bool ParseColumnFamilyOption(const std::string& name, const std::string& value,
         return false;
       }
       new_options->table_factory.reset(NewBlockBasedTableFactory(table_opt));
-    } else if (name == "min_write_buffer_number_to_merge") {
-      new_options->min_write_buffer_number_to_merge = ParseInt(value);
-    } else if (name == "max_write_buffer_number_to_maintain") {
-      new_options->max_write_buffer_number_to_maintain = ParseInt(value);
     } else if (name == "compression") {
       new_options->compression = ParseCompressionType(value);
     } else if (name == "compression_per_level") {
@@ -431,28 +528,12 @@ bool ParseColumnFamilyOption(const std::string& name, const std::string& value,
       }
       new_options->compression_opts.strategy =
           ParseInt(value.substr(start, value.size() - start));
-    } else if (name == "num_levels") {
-      new_options->num_levels = ParseInt(value);
-    } else if (name == "level_compaction_dynamic_level_bytes") {
-      new_options->level_compaction_dynamic_level_bytes =
-          ParseBoolean(name, value);
-    } else if (name == "purge_redundant_kvs_while_flush") {
-      new_options->purge_redundant_kvs_while_flush =
-          ParseBoolean(name, value);
-    } else if (name == "compaction_style") {
-      new_options->compaction_style = ParseCompactionStyle(value);
     } else if (name == "compaction_options_universal") {
       // TODO(ljin): add support
       return false;
     } else if (name == "compaction_options_fifo") {
       new_options->compaction_options_fifo.max_table_files_size =
           ParseUint64(value);
-    } else if (name == "bloom_locality") {
-      new_options->bloom_locality = ParseUint32(value);
-    } else if (name == "min_partial_merge_operands") {
-      new_options->min_partial_merge_operands = ParseUint32(value);
-    } else if (name == "inplace_update_support") {
-      new_options->inplace_update_support = ParseBoolean(name, value);
     } else if (name == "prefix_extractor") {
       const std::string kFixedPrefixName = "fixed:";
       const std::string kCappedPrefixName = "capped:";
@@ -473,97 +554,110 @@ bool ParseColumnFamilyOption(const std::string& name, const std::string& value,
       } else {
         return false;
       }
-    } else if (name == "optimize_filters_for_hits") {
-      new_options->optimize_filters_for_hits = ParseBoolean(name, value);
     } else {
-      return false;
+      auto iter = cf_options_type_info.find(name);
+      if (iter == cf_options_type_info.end()) {
+        return false;
+      }
+      const auto& opt_info = iter->second;
+      return ParseOptionHelper(
+          reinterpret_cast<char*>(new_options) + opt_info.offset, opt_info.type,
+          value);
     }
-  }
-  catch (std::exception& e) {
+  } catch (std::exception& e) {
     return false;
   }
   return true;
 }
 
+bool SerializeSingleDBOption(const DBOptions& db_options,
+                             const std::string& name, std::string* opt_string) {
+  auto iter = db_options_type_info.find(name);
+  if (iter == db_options_type_info.end()) {
+    return false;
+  }
+  auto& opt_info = iter->second;
+  const char* opt_address =
+      reinterpret_cast<const char*>(&db_options) + opt_info.offset;
+  std::string value;
+  bool result = SerializeSingleOptionHelper(opt_address, opt_info.type, &value);
+  if (result) {
+    *opt_string = name + " = " + value + ";  ";
+  }
+  return result;
+}
+
+Status GetStringFromDBOptions(const DBOptions& db_options,
+                              std::string* opt_string) {
+  assert(opt_string);
+  opt_string->clear();
+  for (auto iter = db_options_type_info.begin();
+       iter != db_options_type_info.end(); ++iter) {
+    std::string single_output;
+    bool result =
+        SerializeSingleDBOption(db_options, iter->first, &single_output);
+    assert(result);
+    if (result) {
+      opt_string->append(single_output);
+    }
+  }
+  return Status::OK();
+}
+
+bool SerializeSingleColumnFamilyOption(const ColumnFamilyOptions& cf_options,
+                                       const std::string& name,
+                                       std::string* opt_string) {
+  auto iter = cf_options_type_info.find(name);
+  if (iter == cf_options_type_info.end()) {
+    return false;
+  }
+  auto& opt_info = iter->second;
+  const char* opt_address =
+      reinterpret_cast<const char*>(&cf_options) + opt_info.offset;
+  std::string value;
+  bool result = SerializeSingleOptionHelper(opt_address, opt_info.type, &value);
+  if (result) {
+    *opt_string = name + " = " + value + ";  ";
+  }
+  return result;
+}
+
+Status GetStringFromColumnFamilyOptions(const ColumnFamilyOptions& cf_options,
+                                        std::string* opt_string) {
+  assert(opt_string);
+  opt_string->clear();
+  for (auto iter = cf_options_type_info.begin();
+       iter != cf_options_type_info.end(); ++iter) {
+    std::string single_output;
+    bool result = SerializeSingleColumnFamilyOption(cf_options, iter->first,
+                                                    &single_output);
+    if (result) {
+      opt_string->append(single_output);
+    } else {
+      printf("failed to serialize %s\n", iter->first.c_str());
+    }
+    assert(result);
+  }
+  return Status::OK();
+}
+
 bool ParseDBOption(const std::string& name, const std::string& value,
                    DBOptions* new_options) {
   try {
-    if (name == "create_if_missing") {
-      new_options->create_if_missing = ParseBoolean(name, value);
-    } else if (name == "create_missing_column_families") {
-      new_options->create_missing_column_families =
-          ParseBoolean(name, value);
-    } else if (name == "error_if_exists") {
-      new_options->error_if_exists = ParseBoolean(name, value);
-    } else if (name == "paranoid_checks") {
-      new_options->paranoid_checks = ParseBoolean(name, value);
-    } else if (name == "rate_limiter_bytes_per_sec") {
+    if (name == "rate_limiter_bytes_per_sec") {
       new_options->rate_limiter.reset(
           NewGenericRateLimiter(static_cast<int64_t>(ParseUint64(value))));
-    } else if (name == "max_open_files") {
-      new_options->max_open_files = ParseInt(value);
-    } else if (name == "max_total_wal_size") {
-      new_options->max_total_wal_size = ParseUint64(value);
-    } else if (name == "disable_data_sync") {
-      new_options->disableDataSync = ParseBoolean(name, value);
-    } else if (name == "use_fsync") {
-      new_options->use_fsync = ParseBoolean(name, value);
-    } else if (name == "db_paths") {
-      // TODO(ljin): add support
-      return false;
-    } else if (name == "db_log_dir") {
-      new_options->db_log_dir = value;
-    } else if (name == "wal_dir") {
-      new_options->wal_dir = value;
-    } else if (name == "delete_obsolete_files_period_micros") {
-      new_options->delete_obsolete_files_period_micros = ParseUint64(value);
-    } else if (name == "max_background_compactions") {
-      new_options->max_background_compactions = ParseInt(value);
-    } else if (name == "max_background_flushes") {
-      new_options->max_background_flushes = ParseInt(value);
-    } else if (name == "max_log_file_size") {
-      new_options->max_log_file_size = ParseSizeT(value);
-    } else if (name == "log_file_time_to_roll") {
-      new_options->log_file_time_to_roll = ParseSizeT(value);
-    } else if (name == "keep_log_file_num") {
-      new_options->keep_log_file_num = ParseSizeT(value);
-    } else if (name == "max_manifest_file_size") {
-      new_options->max_manifest_file_size = ParseUint64(value);
-    } else if (name == "table_cache_numshardbits") {
-      new_options->table_cache_numshardbits = ParseInt(value);
-    } else if (name == "WAL_ttl_seconds") {
-      new_options->WAL_ttl_seconds = ParseUint64(value);
-    } else if (name == "WAL_size_limit_MB") {
-      new_options->WAL_size_limit_MB = ParseUint64(value);
-    } else if (name == "manifest_preallocation_size") {
-      new_options->manifest_preallocation_size = ParseSizeT(value);
-    } else if (name == "allow_os_buffer") {
-      new_options->allow_os_buffer = ParseBoolean(name, value);
-    } else if (name == "allow_mmap_reads") {
-      new_options->allow_mmap_reads = ParseBoolean(name, value);
-    } else if (name == "allow_mmap_writes") {
-      new_options->allow_mmap_writes = ParseBoolean(name, value);
-    } else if (name == "is_fd_close_on_exec") {
-      new_options->is_fd_close_on_exec = ParseBoolean(name, value);
-    } else if (name == "skip_log_error_on_recovery") {
-      new_options->skip_log_error_on_recovery = ParseBoolean(name, value);
-    } else if (name == "stats_dump_period_sec") {
-      new_options->stats_dump_period_sec = ParseUint32(value);
-    } else if (name == "advise_random_on_open") {
-      new_options->advise_random_on_open = ParseBoolean(name, value);
-    } else if (name == "db_write_buffer_size") {
-      new_options->db_write_buffer_size = ParseUint64(value);
-    } else if (name == "use_adaptive_mutex") {
-      new_options->use_adaptive_mutex = ParseBoolean(name, value);
-    } else if (name == "bytes_per_sync") {
-      new_options->bytes_per_sync = ParseUint64(value);
-    } else if (name == "wal_bytes_per_sync") {
-      new_options->wal_bytes_per_sync = ParseUint64(value);
     } else {
-      return false;
+      auto iter = db_options_type_info.find(name);
+      if (iter == db_options_type_info.end()) {
+        return false;
+      }
+      const auto& opt_info = iter->second;
+      return ParseOptionHelper(
+          reinterpret_cast<char*>(new_options) + opt_info.offset, opt_info.type,
+          value);
     }
-  }
-  catch (std::exception& e) {
+  } catch (const std::exception& e) {
     return false;
   }
   return true;
@@ -646,6 +740,49 @@ Status GetBlockBasedTableOptionsFromString(
   }
   return GetBlockBasedTableOptionsFromMap(table_options, opts_map,
                                           new_table_options);
+}
+
+Status GetPlainTableOptionsFromMap(
+    const PlainTableOptions& table_options,
+    const std::unordered_map<std::string, std::string>& opts_map,
+    PlainTableOptions* new_table_options) {
+  assert(new_table_options);
+  *new_table_options = table_options;
+
+  for (const auto& o : opts_map) {
+    try {
+      if (o.first == "user_key_len") {
+        new_table_options->user_key_len = ParseUint32(o.second);
+      } else if (o.first == "bloom_bits_per_key") {
+        new_table_options->bloom_bits_per_key = ParseInt(o.second);
+      } else if (o.first == "hash_table_ratio") {
+        new_table_options->hash_table_ratio = ParseDouble(o.second);
+      } else if (o.first == "index_sparseness") {
+        new_table_options->index_sparseness = ParseSizeT(o.second);
+      } else if (o.first == "huge_page_tlb_size") {
+        new_table_options->huge_page_tlb_size = ParseSizeT(o.second);
+      } else if (o.first == "encoding_type") {
+        if (o.second == "kPlain") {
+          new_table_options->encoding_type = kPlain;
+        } else if (o.second == "kPrefix") {
+          new_table_options->encoding_type = kPrefix;
+        } else {
+          throw std::invalid_argument("Unknown encoding_type: " + o.second);
+        }
+      } else if (o.first == "full_scan_mode") {
+        new_table_options->full_scan_mode = ParseBoolean(o.first, o.second);
+      } else if (o.first == "store_index_in_file") {
+        new_table_options->store_index_in_file =
+            ParseBoolean(o.first, o.second);
+      } else {
+        return Status::InvalidArgument("Unrecognized option: " + o.first);
+      }
+    } catch (std::exception& e) {
+      return Status::InvalidArgument("error parsing " + o.first + ":" +
+                                     std::string(e.what()));
+    }
+  }
+  return Status::OK();
 }
 
 Status GetColumnFamilyOptionsFromMap(

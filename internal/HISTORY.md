@@ -1,7 +1,32 @@
 # Rocksdb Change Log
 
-## 3.12.1 (7/16/2015)
-* Fix data loss after DB recovery by not allowing flush/compaction to be scheduled until DB opened
+## 4.0.0 (9/9/2015)
+### New Features
+* Added support for transactions.  See include/rocksdb/utilities/transaction.h for more info.
+* DB::GetProperty() now accept "rocksdb.aggregated-table-properties" and "rocksdb.aggregated-table-properties-at-levelN", in which case it returns aggregated table properties of the target column family, or the aggregated table properties of the specified level N if the "at-level" version is used.
+* Add compression option kZSTDNotFinalCompression for people to experiment ZSTD although its format is not finalized.
+* We removed the need for LATEST_BACKUP file in BackupEngine. We still keep writing it when we create new backups (because of backward compatibility), but we don't read it anymore.
+
+### Public API Changes
+* Removed class Env::RandomRWFile and Env::NewRandomRWFile().
+* Renamed DBOptions.num_subcompactions to DBOptions.max_subcompactions to make the name better match the actual functionality of the option.
+* Added Equal() method to the Comparator interface that can optionally be overwritten in cases where equality comparisons can be done more efficiently than three-way comparisons.
+* Previous 'experimental' OptimisticTransaction class has been replaced by Transaction class.
+
+## 3.13.0 (8/6/2015)
+### New Features
+* RollbackToSavePoint() in WriteBatch/WriteBatchWithIndex
+* Add NewCompactOnDeletionCollectorFactory() in utilities/table_properties_collectors, which allows rocksdb to mark a SST file as need-compaction when it observes at least D deletion entries in any N consecutive entries in that SST file.  Note that this feature depends on an experimental NeedCompact() API --- the result of this API will not persist after DB restart.
+* Add DBOptions::delete_scheduler. Use NewDeleteScheduler() in include/rocksdb/delete_scheduler.h to create a DeleteScheduler that can be shared among multiple RocksDB instances to control the file deletion rate of SST files that exist in the first db_path.
+
+### Public API Changes
+* Deprecated WriteOptions::timeout_hint_us. We no longer support write timeout. If you really need this option, talk to us and we might consider returning it.
+* Deprecated purge_redundant_kvs_while_flush option.
+* Removed BackupEngine::NewBackupEngine() and NewReadOnlyBackupEngine() that were deprecated in RocksDB 3.8. Please use BackupEngine::Open() instead.
+* Deprecated Compaction Filter V2. We are not aware of any existing use-cases. If you use this filter, your compile will break with RocksDB 3.13. Please let us know if you use it and we'll put it back in RocksDB 3.14.
+* Env::FileExists now returns a Status instead of a boolean
+* Add statistics::getHistogramString() to print detailed distribution of a histogram metric.
+* Add DBOptions::skip_stats_update_on_db_open.  When it is on, DB::Open() will run faster as it skips the random reads required for loading necessary stats from SST files to optimize compaction.
 
 ## 3.12.0 (7/2/2015)
 ### New Features
@@ -11,6 +36,7 @@
 * Several new features on EventListener (see include/rocksdb/listener.h):
  - OnCompationCompleted() now returns per-compaciton job statistics, defined in include/rocksdb/compaction_job_stats.h.
  - Added OnTableFileCreated() and OnTableFileDeleted().
+* Add compaction_options_universal.enable_trivial_move to true, to allow trivial move while performing universal compaction. Trivial move will happen only when all the input files are non overlapping.
 
 ### Public API changes
 * EventListener::OnFlushCompleted() now passes FlushJobInfo instead of a list of parameters.
@@ -30,6 +56,7 @@
 * DB:Open() will fail if the compression specified in Options is not linked with the binary. If you see this failure, recompile RocksDB with compression libraries present on your system. Also, previously our default compression was snappy. This behavior is now changed. Now, the default compression is snappy only if it's available on the system. If it isn't we change the default to kNoCompression.
 * We changed how we account for memory used in block cache. Previously, we only counted the sum of block sizes currently present in block cache. Now, we count the actual memory usage of the blocks. For example, a block of size 4.5KB will use 8KB memory with jemalloc. This might decrease your memory usage and possibly decrease performance. Increase block cache size if you see this happening after an upgrade.
 * Add BackupEngineImpl.options_.max_background_operations to specify the maximum number of operations that may be performed in parallel. Add support for parallelized backup and restore.
+* Add DB::SyncWAL() that does a WAL sync without blocking writers.
 
 ## 3.11.0 (5/19/2015)
 ### New Features

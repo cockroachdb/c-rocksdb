@@ -21,13 +21,12 @@
 
 #include "db/compaction_picker.h"
 #include "db/db_impl.h"
-#include "db/job_context.h"
-#include "db/version_set.h"
-#include "db/writebuffer.h"
 #include "db/internal_stats.h"
+#include "db/job_context.h"
 #include "db/table_properties_collector.h"
 #include "db/version_set.h"
 #include "db/write_controller.h"
+#include "db/writebuffer.h"
 #include "util/autovector.h"
 #include "util/compression.h"
 #include "util/hash_skiplist_rep.h"
@@ -126,7 +125,12 @@ ColumnFamilyOptions SanitizeOptions(const DBOptions& db_options,
   // if user sets arena_block_size, we trust user to use this value. Otherwise,
   // calculate a proper value from writer_buffer_size;
   if (result.arena_block_size <= 0) {
-    result.arena_block_size = result.write_buffer_size / 10;
+    result.arena_block_size = result.write_buffer_size / 8;
+
+    // Align up to 4k
+    const size_t align = 4 * 1024;
+    result.arena_block_size =
+        ((result.arena_block_size + align - 1) / align) * align;
   }
   result.min_write_buffer_number_to_merge =
       std::min(result.min_write_buffer_number_to_merge,
@@ -137,9 +141,6 @@ ColumnFamilyOptions SanitizeOptions(const DBOptions& db_options,
   if (result.compaction_style == kCompactionStyleLevel &&
       result.num_levels < 2) {
     result.num_levels = 2;
-  }
-  if (result.max_mem_compaction_level >= result.num_levels) {
-    result.max_mem_compaction_level = result.num_levels - 1;
   }
   if (result.max_write_buffer_number < 2) {
     result.max_write_buffer_number = 2;
@@ -245,6 +246,9 @@ void SuperVersion::Cleanup() {
   imm->Unref(&to_delete);
   MemTable* m = mem->Unref();
   if (m != nullptr) {
+    auto* memory_usage = current->cfd()->imm()->current_memory_usage();
+    assert(*memory_usage >= m->ApproximateMemoryUsage());
+    *memory_usage -= m->ApproximateMemoryUsage();
     to_delete.push_back(m);
   }
   current->Unref();
@@ -477,6 +481,10 @@ void ColumnFamilyData::SetCurrent(Version* current_version) {
 
 uint64_t ColumnFamilyData::GetNumLiveVersions() const {
   return VersionSet::GetNumLiveVersions(dummy_versions_);
+}
+
+uint64_t ColumnFamilyData::GetTotalSstFilesSize() const {
+  return VersionSet::GetTotalSstFilesSize(dummy_versions_);
 }
 
 MemTable* ColumnFamilyData::ConstructNewMemtable(

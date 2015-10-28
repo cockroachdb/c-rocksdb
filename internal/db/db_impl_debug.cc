@@ -131,15 +131,14 @@ void DBImpl::TEST_UnlockMutex() {
 }
 
 void* DBImpl::TEST_BeginWrite() {
-  auto w = new WriteThread::Writer(&mutex_);
-  Status s = write_thread_.EnterWriteThread(w, 0);
-  assert(s.ok() && !w->done);  // No timeout and nobody should do our job
+  auto w = new WriteThread::Writer();
+  write_thread_.EnterUnbatched(w, &mutex_);
   return reinterpret_cast<void*>(w);
 }
 
 void DBImpl::TEST_EndWrite(void* w) {
   auto writer = reinterpret_cast<WriteThread::Writer*>(w);
-  write_thread_.ExitWriteThread(writer, writer, Status::OK());
+  write_thread_.ExitUnbatched(writer);
   delete writer;
 }
 

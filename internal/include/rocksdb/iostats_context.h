@@ -38,13 +38,20 @@ struct IOStatsContext {
   uint64_t read_nanos;
   // time spent in sync_file_range().
   uint64_t range_sync_nanos;
-
+  // time spent in fsync
+  uint64_t fsync_nanos;
+  // time spent in preparing write (fallocate etc).
+  uint64_t prepare_write_nanos;
   // time spent in Logger::Logv().
   uint64_t logger_nanos;
 };
 
 #ifndef IOS_CROSS_COMPILE
+# ifdef _WIN32
+extern __declspec(thread) IOStatsContext iostats_context;
+# else
 extern __thread IOStatsContext iostats_context;
+# endif
 #endif  // IOS_CROSS_COMPILE
 
 }  // namespace rocksdb

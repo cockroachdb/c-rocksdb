@@ -22,7 +22,14 @@
 #include "rocksdb/types.h"
 #include "rocksdb/transaction_log.h"
 #include "rocksdb/listener.h"
+#include "rocksdb/snapshot.h"
 #include "rocksdb/thread_status.h"
+
+#ifdef _WIN32
+// Windows API macro interference
+#undef DeleteFile
+#endif
+
 
 namespace rocksdb {
 
@@ -61,18 +68,6 @@ struct ColumnFamilyDescriptor {
 
 static const int kMajorVersion = __ROCKSDB_MAJOR__;
 static const int kMinorVersion = __ROCKSDB_MINOR__;
-
-// Abstract handle to particular state of a DB.
-// A Snapshot is an immutable object and can therefore be safely
-// accessed from multiple threads without any external synchronization.
-class Snapshot {
- public:
-  // returns Snapshot's sequence number
-  virtual SequenceNumber GetSequenceNumber() const = 0;
-
- protected:
-  virtual ~Snapshot();
-};
 
 // A range of keys
 struct Range {
@@ -317,21 +312,34 @@ class DB {
   //  "rocksdb.compaction-pending" - 1 if at least one compaction is pending
   //  "rocksdb.background-errors" - accumulated number of background errors
   //  "rocksdb.cur-size-active-mem-table"
-  //  "rocksdb.cur-size-all-mem-tables"
-  //  "rocksdb.num-entries-active-mem-table"
-  //  "rocksdb.num-entries-imm-mem-tables"
-  //  "rocksdb.num-deletes-active-mem-table"
-  //  "rocksdb.num-deletes-imm-mem-tables"
-  //  "rocksdb.estimate-num-keys" - estimated keys in the column family
-  //  "rocksdb.estimate-table-readers-mem" - estimated memory used for reding
-  //      SST tables, that is not counted as a part of block cache.
-  //  "rocksdb.is-file-deletions-enabled"
-  //  "rocksdb.num-snapshots"
-  //  "rocksdb.oldest-snapshot-time"
-  //  "rocksdb.num-live-versions" - `version` is an internal data structure.
-  //      See version_set.h for details. More live versions often mean more SST
-  //      files are held from being deleted, by iterators or unfinished
-  //      compactions.
+//  "rocksdb.size-all-mem-tables"
+//  "rocksdb.num-entries-active-mem-table"
+//  "rocksdb.num-entries-imm-mem-tables"
+//  "rocksdb.num-deletes-active-mem-table"
+//  "rocksdb.num-deletes-imm-mem-tables"
+//  "rocksdb.estimate-num-keys" - estimated keys in the column family
+//  "rocksdb.estimate-table-readers-mem" - estimated memory used for reding
+//      SST tables, that is not counted as a part of block cache.
+//  "rocksdb.is-file-deletions-enabled"
+//  "rocksdb.num-snapshots"
+//  "rocksdb.oldest-snapshot-time"
+//  "rocksdb.num-live-versions" - `version` is an internal data structure.
+//      See version_set.h for details. More live versions often mean more SST
+//      files are held from being deleted, by iterators or unfinished
+//      compactions.
+//  "rocksdb.estimate-live-data-size"
+//  "rocksdb.total-sst-files-size" - total size of all used sst files, this may
+//      slow down online queries if there are too many files.
+//  "rocksdb.base-level"
+//  "rocksdb.estimate-pending-compaction-bytes" - estimated total number of
+//      bytes compaction needs to rewrite the data to get all levels down
+//      to under target size. Not valid for other compactions than level-based.
+//  "rocksdb.aggregated-table-properties" - returns a string representation of
+//      the aggregated table properties of the target column family.
+//  "rocksdb.aggregated-table-properties-at-level<N>", same as the previous
+//      one but only returns the aggregated table properties of the specified
+//      level "N" at the target column family.
+//  replaced by the target level.
 #ifndef ROCKSDB_LITE
   struct Properties {
     static const std::string kNumFilesAtLevelPrefix;
@@ -345,6 +353,7 @@ class DB {
     static const std::string kBackgroundErrors;
     static const std::string kCurSizeActiveMemTable;
     static const std::string kCurSizeAllMemTables;
+    static const std::string kSizeAllMemTables;
     static const std::string kNumEntriesActiveMemTable;
     static const std::string kNumEntriesImmMemTables;
     static const std::string kNumDeletesActiveMemTable;
@@ -355,6 +364,11 @@ class DB {
     static const std::string kNumSnapshots;
     static const std::string kOldestSnapshotTime;
     static const std::string kNumLiveVersions;
+    static const std::string kEstimateLiveDataSize;
+    static const std::string kTotalSstFilesSize;
+    static const std::string kEstimatePendingCompactionBytes;
+    static const std::string kAggregatedTableProperties;
+    static const std::string kAggregatedTablePropertiesAtLevel;
   };
 #endif /* ROCKSDB_LITE */
 
@@ -373,6 +387,7 @@ class DB {
   //  "rocksdb.background-errors"
   //  "rocksdb.cur-size-active-mem-table"
   //  "rocksdb.cur-size-all-mem-tables"
+  //  "rocksdb.size-all-mem-tables"
   //  "rocksdb.num-entries-active-mem-table"
   //  "rocksdb.num-entries-imm-mem-tables"
   //  "rocksdb.num-deletes-active-mem-table"
@@ -383,6 +398,10 @@ class DB {
   //  "rocksdb.num-snapshots"
   //  "rocksdb.oldest-snapshot-time"
   //  "rocksdb.num-live-versions"
+  //  "rocksdb.estimate-live-data-size"
+  //  "rocksdb.total-sst-files-size"
+  //  "rocksdb.base-level"
+  //  "rocksdb.estimate-pending-compaction-bytes"
   virtual bool GetIntProperty(ColumnFamilyHandle* column_family,
                               const Slice& property, uint64_t* value) = 0;
   virtual bool GetIntProperty(const Slice& property, uint64_t* value) {
@@ -396,7 +415,9 @@ class DB {
   // if the user data compresses by a factor of ten, the returned
   // sizes will be one-tenth the size of the corresponding user data size.
   //
-  // The results may not include the sizes of recently written data.
+  // If include_memtable is set to true, then the result will also
+  // include those recently written data in the mem-tables if
+  // the mem-table type supports it.
   virtual void GetApproximateSizes(ColumnFamilyHandle* column_family,
                                    const Range* range, int n, uint64_t* sizes,
                                    bool include_memtable = false) = 0;
@@ -431,7 +452,12 @@ class DB {
     return CompactRange(options, DefaultColumnFamily(), begin, end);
   }
 
-  __attribute__((deprecated)) virtual Status
+#if defined(__GNUC__) || defined(__clang__)
+  __attribute__((deprecated))
+#elif _WIN32
+  __declspec(deprecated)
+#endif
+   virtual Status
       CompactRange(ColumnFamilyHandle* column_family, const Slice* begin,
                    const Slice* end, bool change_level = false,
                    int target_level = -1, uint32_t target_path_id = 0) {
@@ -441,7 +467,12 @@ class DB {
     options.target_path_id = target_path_id;
     return CompactRange(options, column_family, begin, end);
   }
-  __attribute__((deprecated)) virtual Status
+#if defined(__GNUC__) || defined(__clang__)
+  __attribute__((deprecated))
+#elif _WIN32
+  __declspec(deprecated)
+#endif
+    virtual Status
       CompactRange(const Slice* begin, const Slice* end,
                    bool change_level = false, int target_level = -1,
                    uint32_t target_path_id = 0) {
@@ -461,10 +492,10 @@ class DB {
     return SetOptions(DefaultColumnFamily(), new_options);
   }
 
-  // CompactFiles() inputs a list of files specified by file numbers
-  // and compacts them to the specified level.  Note that the behavior
-  // is different from CompactRange in that CompactFiles() will
-  // perform the compaction job using the CURRENT thread.
+  // CompactFiles() inputs a list of files specified by file numbers and
+  // compacts them to the specified level. Note that the behavior is different
+  // from CompactRange() in that CompactFiles() performs the compaction job
+  // using the CURRENT thread.
   //
   // @see GetDataBaseMetaData
   // @see GetColumnFamilyMetaData
@@ -524,6 +555,12 @@ class DB {
     return Flush(options, DefaultColumnFamily());
   }
 
+  // Sync the wal. Note that Write() followed by SyncWAL() is not exactly the
+  // same as Write() with sync=true: in the latter case the changes won't be
+  // visible until the sync is done.
+  // Currently only works if allow_mmap_writes = false in Options.
+  virtual Status SyncWAL() = 0;
+
   // The sequence number of the most recent transaction.
   virtual SequenceNumber GetLatestSequenceNumber() const = 0;
 
@@ -581,6 +618,8 @@ class DB {
       const TransactionLogIterator::ReadOptions&
           read_options = TransactionLogIterator::ReadOptions()) = 0;
 
+// Windows API macro interference
+#undef DeleteFile
   // Delete the file name from the db directory and update the internal state to
   // reflect that. Supports deletion of sst and log files only. 'name' must be
   // path relative to the db directory. eg. 000001.sst, /archive/000003.log
