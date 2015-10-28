@@ -11,7 +11,7 @@ patch -p1 < iterate-upper-bound.patch
 patch -p1 < prefix-same-as-start.patch
 
 # symlink so cgo compiles them
-for source_file in $(make sources | grep -vE '(/redis/|_(cmd|tool).cc$)'); do
+for source_file in $(make sources | grep -vE '(/redis/|(_(cmd|tool)|(env|port)_[a-z]+).cc$)'); do
   ln -sf $source_file $(echo $source_file | sed s,/,_,g)
 done
 
