@@ -3,6 +3,12 @@
 // compiled in.
 package rocksdb
 
+import (
+	// explicit because these Go libraries do not export any Go symbols.
+	_ "github.com/cockroachdb/c-lz4"
+	_ "github.com/cockroachdb/c-snappy"
+)
+
 // #cgo CPPFLAGS: -Iinternal -Iinternal/include -Iinternal/db -Iinternal/util
 // #cgo CPPFLAGS: -Iinternal/utilities/merge_operators/string_append
 // #cgo CPPFLAGS: -I../c-snappy/internal -I../c-lz4/internal/lib
