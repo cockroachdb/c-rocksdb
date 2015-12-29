@@ -15,9 +15,11 @@ import (
 // #cgo CPPFLAGS: -DROCKSDB_PLATFORM_POSIX -DNDEBUG -DSNAPPY -DLZ4
 // #cgo darwin CPPFLAGS: -DOS_MACOSX
 // #cgo linux CPPFLAGS: -DOS_LINUX
+// #cgo freebsd CPPFLAGS: -DOS_FREEBSD
 // #cgo CXXFLAGS: -W -Wextra -Wall -Wsign-compare -Wshadow -Wno-unused-parameter
 // #cgo CXXFLAGS: -std=c++11 -fno-omit-frame-pointer -momit-leaf-frame-pointer
 // #cgo darwin CXXFLAGS: -Wshorten-64-to-32
+// #cgo freebsd CXXFLAGS: -Wshorten-64-to-32
 // #cgo darwin LDFLAGS: -Wl,-undefined -Wl,dynamic_lookup
 // #cgo !darwin LDFLAGS: -Wl,-unresolved-symbols=ignore-all
 import "C"
