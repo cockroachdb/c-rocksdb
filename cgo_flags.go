@@ -5,14 +5,15 @@ package rocksdb
 
 import (
 	// explicit because these Go libraries do not export any Go symbols.
+	_ "github.com/cockroachdb/c-jemalloc"
 	_ "github.com/cockroachdb/c-lz4"
 	_ "github.com/cockroachdb/c-snappy"
 )
 
 // #cgo CPPFLAGS: -Iinternal -Iinternal/include -Iinternal/db -Iinternal/util
 // #cgo CPPFLAGS: -Iinternal/utilities/merge_operators/string_append
-// #cgo CPPFLAGS: -I../c-snappy/internal -I../c-lz4/internal/lib
-// #cgo CPPFLAGS: -DROCKSDB_PLATFORM_POSIX -DNDEBUG -DSNAPPY -DLZ4
+// #cgo CPPFLAGS: -I../c-lz4/internal/lib -I../c-snappy/internal
+// #cgo CPPFLAGS: -DROCKSDB_PLATFORM_POSIX -DNDEBUG -DJEMALLOC -DLZ4 -DSNAPPY
 // #cgo darwin CPPFLAGS: -DOS_MACOSX
 // #cgo linux CPPFLAGS: -DOS_LINUX
 // #cgo freebsd CPPFLAGS: -DOS_FREEBSD
