@@ -20,6 +20,17 @@ class Iterator;
 class TransactionDB;
 class WriteBatchWithIndex;
 
+// Provides notification to the caller of SetSnapshotOnNextOperation when
+// the actual snapshot gets created
+class TransactionNotifier {
+ public:
+  virtual ~TransactionNotifier() {}
+
+  // Implement this method to receive notification when a snapshot is
+  // requested via SetSnapshotOnNextOperation.
+  virtual void SnapshotCreated(const Snapshot* newSnapshot) = 0;
+};
+
 // Provides BEGIN/COMMIT/ROLLBACK transactions.
 //
 // To use transactions, you must first create either an OptimisticTransactionDB
@@ -61,11 +72,47 @@ class Transaction {
   // methods.  See Transaction::Get() for more details.
   virtual void SetSnapshot() = 0;
 
+  // Similar to SetSnapshot(), but will not change the current snapshot
+  // until Put/Merge/Delete/GetForUpdate/MultigetForUpdate is called.
+  // By calling this function, the transaction will essentially call
+  // SetSnapshot() for you right before performing the next write/GetForUpdate.
+  //
+  // Calling SetSnapshotOnNextOperation() will not affect what snapshot is
+  // returned by GetSnapshot() until the next write/GetForUpdate is executed.
+  //
+  // When the snapshot is created the notifier's SnapshotCreated method will
+  // be called so that the caller can get access to the snapshot.
+  //
+  // This is an optimization to reduce the likelyhood of conflicts that
+  // could occur in between the time SetSnapshot() is called and the first
+  // write/GetForUpdate operation.  Eg, this prevents the following
+  // race-condition:
+  //
+  //   txn1->SetSnapshot();
+  //                             txn2->Put("A", ...);
+  //                             txn2->Commit();
+  //   txn1->GetForUpdate(opts, "A", ...);  // FAIL!
+  virtual void SetSnapshotOnNextOperation(
+      std::shared_ptr<TransactionNotifier> notifier = nullptr) = 0;
+
   // Returns the Snapshot created by the last call to SetSnapshot().
   //
   // REQUIRED: The returned Snapshot is only valid up until the next time
-  // SetSnapshot() is called or the Transaction is deleted.
+  // SetSnapshot()/SetSnapshotOnNextSavePoint() is called, ClearSnapshot()
+  // is called, or the Transaction is deleted.
   virtual const Snapshot* GetSnapshot() const = 0;
+
+  // Clears the current snapshot (i.e. no snapshot will be 'set')
+  //
+  // This removes any snapshot that currently exists or is set to be created
+  // on the next update operation (SetSnapshotOnNextOperation).
+  //
+  // Calling ClearSnapshot() has no effect on keys written before this function
+  // has been called.
+  //
+  // If a reference to a snapshot was retrieved via GetSnapshot(), it will no
+  // longer be valid and should be discarded after a call to ClearSnapshot().
+  virtual void ClearSnapshot() = 0;
 
   // Write all batched keys to the db atomically.
   //
@@ -182,16 +229,12 @@ class Transaction {
   //
   // The returned iterator is only valid until Commit(), Rollback(), or
   // RollbackToSavePoint() is called.
-  // NOTE: Transaction::Put/Merge/Delete will currently invalidate this iterator
-  // until
-  // the following issue is fixed:
-  // https://github.com/facebook/rocksdb/issues/616
   virtual Iterator* GetIterator(const ReadOptions& read_options) = 0;
 
   virtual Iterator* GetIterator(const ReadOptions& read_options,
                                 ColumnFamilyHandle* column_family) = 0;
 
-  // Put, Merge, and Delete behave similarly to their corresponding
+  // Put, Merge, Delete, and SingleDelete behave similarly to the corresponding
   // functions in WriteBatch, but will also do conflict checking on the
   // keys being written.
   //
@@ -224,6 +267,13 @@ class Transaction {
                         const SliceParts& key) = 0;
   virtual Status Delete(const SliceParts& key) = 0;
 
+  virtual Status SingleDelete(ColumnFamilyHandle* column_family,
+                              const Slice& key) = 0;
+  virtual Status SingleDelete(const Slice& key) = 0;
+  virtual Status SingleDelete(ColumnFamilyHandle* column_family,
+                              const SliceParts& key) = 0;
+  virtual Status SingleDelete(const SliceParts& key) = 0;
+
   // PutUntracked() will write a Put to the batch of operations to be committed
   // in this transaction.  This write will only happen if this transaction
   // gets committed successfully.  But unlike Transaction::Put(),
@@ -255,6 +305,21 @@ class Transaction {
 
   // Similar to WriteBatch::PutLogData
   virtual void PutLogData(const Slice& blob) = 0;
+
+  // By default, all Put/Merge/Delete operations will be indexed in the
+  // transaction so that Get/GetForUpdate/GetIterator can search for these
+  // keys.
+  //
+  // If the caller does not want to fetch the keys about to be written,
+  // they may want to avoid indexing as a performance optimization.
+  // Calling DisableIndexing() will turn off indexing for all future
+  // Put/Merge/Delete operations until EnableIndexing() is called.
+  //
+  // If a key is Put/Merge/Deleted after DisableIndexing is called and then
+  // is fetched via Get/GetForUpdate/GetIterator, the result of the fetch is
+  // undefined.
+  virtual void DisableIndexing() = 0;
+  virtual void EnableIndexing() = 0;
 
   // Returns the number of distinct Keys being tracked by this transaction.
   // If this transaction was created by a TransactinDB, this is the number of

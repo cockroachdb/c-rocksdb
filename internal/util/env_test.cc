@@ -36,6 +36,7 @@
 #include "util/mutexlock.h"
 #include "util/string_util.h"
 #include "util/testharness.h"
+#include "util/testutil.h"
 
 namespace rocksdb {
 
@@ -56,46 +57,6 @@ static void SetBool(void* ptr) {
       ->store(true, std::memory_order_relaxed);
 }
 
-class SleepingBackgroundTask {
- public:
-  explicit SleepingBackgroundTask()
-      : bg_cv_(&mutex_), should_sleep_(true), sleeping_(false) {}
-  void DoSleep() {
-    MutexLock l(&mutex_);
-    sleeping_ = true;
-    while (should_sleep_) {
-      bg_cv_.Wait();
-    }
-    sleeping_ = false;
-    bg_cv_.SignalAll();
-  }
-
-  void WakeUp() {
-    MutexLock l(&mutex_);
-    should_sleep_ = false;
-    bg_cv_.SignalAll();
-
-    while (sleeping_) {
-      bg_cv_.Wait();
-    }
-  }
-
-  bool IsSleeping() {
-    MutexLock l(&mutex_);
-    return sleeping_;
-  }
-
-  static void DoSleepTask(void* arg) {
-    reinterpret_cast<SleepingBackgroundTask*>(arg)->DoSleep();
-  }
-
- private:
-  port::Mutex mutex_;
-  port::CondVar bg_cv_;  // Signalled when background work finishes
-  bool should_sleep_;
-  bool sleeping_;
-};
-
 TEST_F(EnvPosixTest, RunImmediately) {
   std::atomic<bool> called(false);
   env_->Schedule(&SetBool, &called);
@@ -108,12 +69,12 @@ TEST_F(EnvPosixTest, UnSchedule) {
   env_->SetBackgroundThreads(1, Env::LOW);
 
   /* Block the low priority queue */
-  SleepingBackgroundTask sleeping_task, sleeping_task1;
-  env_->Schedule(&SleepingBackgroundTask::DoSleepTask, &sleeping_task,
+  test::SleepingBackgroundTask sleeping_task, sleeping_task1;
+  env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &sleeping_task,
                  Env::Priority::LOW);
 
   /* Schedule another task */
-  env_->Schedule(&SleepingBackgroundTask::DoSleepTask, &sleeping_task1,
+  env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &sleeping_task1,
                  Env::Priority::LOW, &sleeping_task1);
 
   /* Remove it with a different tag  */
@@ -321,7 +282,7 @@ TEST_F(EnvPosixTest, TwoPools) {
 }
 
 TEST_F(EnvPosixTest, DecreaseNumBgThreads) {
-  std::vector<SleepingBackgroundTask> tasks(10);
+  std::vector<test::SleepingBackgroundTask> tasks(10);
 
   // Set number of thread to 1 first.
   env_->SetBackgroundThreads(1, Env::Priority::HIGH);
@@ -329,7 +290,7 @@ TEST_F(EnvPosixTest, DecreaseNumBgThreads) {
 
   // Schedule 3 tasks. 0 running; Task 1, 2 waiting.
   for (size_t i = 0; i < 3; i++) {
-    env_->Schedule(&SleepingBackgroundTask::DoSleepTask, &tasks[i],
+    env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &tasks[i],
                    Env::Priority::HIGH);
     Env::Default()->SleepForMicroseconds(kDelayMicros);
   }
@@ -393,7 +354,7 @@ TEST_F(EnvPosixTest, DecreaseNumBgThreads) {
   // Enqueue 5 more tasks. Thread pool size now is 4.
   // Task 0, 3, 4, 5 running;6, 7 waiting.
   for (size_t i = 3; i < 8; i++) {
-    env_->Schedule(&SleepingBackgroundTask::DoSleepTask, &tasks[i],
+    env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &tasks[i],
                    Env::Priority::HIGH);
   }
   Env::Default()->SleepForMicroseconds(kDelayMicros);
@@ -435,9 +396,9 @@ TEST_F(EnvPosixTest, DecreaseNumBgThreads) {
   ASSERT_TRUE(!tasks[7].IsSleeping());
 
   // Enqueue thread 8 and 9. Task 5 running; one of 8, 9 might be running.
-  env_->Schedule(&SleepingBackgroundTask::DoSleepTask, &tasks[8],
+  env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &tasks[8],
                  Env::Priority::HIGH);
-  env_->Schedule(&SleepingBackgroundTask::DoSleepTask, &tasks[9],
+  env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &tasks[9],
                  Env::Priority::HIGH);
   Env::Default()->SleepForMicroseconds(kDelayMicros);
   ASSERT_GT(env_->GetThreadPoolQueueLen(Env::Priority::HIGH), (unsigned int)0);
@@ -989,6 +950,7 @@ TEST_F(EnvPosixTest, WritableFileWrapper) {
     }
 
     Status Append(const Slice& data) override { inc(1); return Status::OK(); }
+    Status Truncate(uint64_t size) override { return Status::OK(); }
     Status Close() override { inc(2); return Status::OK(); }
     Status Flush() override { inc(3); return Status::OK(); }
     Status Sync() override { inc(4); return Status::OK(); }
@@ -1009,11 +971,11 @@ TEST_F(EnvPosixTest, WritableFileWrapper) {
     }
 
    protected:
-    Status Allocate(off_t offset, off_t len) override {
+    Status Allocate(uint64_t offset, uint64_t len) override {
       inc(11);
       return Status::OK();
     }
-    Status RangeSync(off_t offset, off_t nbytes) override {
+    Status RangeSync(uint64_t offset, uint64_t nbytes) override {
       inc(12);
       return Status::OK();
     }

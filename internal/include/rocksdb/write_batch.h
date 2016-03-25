@@ -25,6 +25,7 @@
 #ifndef STORAGE_ROCKSDB_INCLUDE_WRITE_BATCH_H_
 #define STORAGE_ROCKSDB_INCLUDE_WRITE_BATCH_H_
 
+#include <atomic>
 #include <stack>
 #include <string>
 #include <stdint.h>
@@ -60,6 +61,29 @@ class WriteBatch : public WriteBatchBase {
     Put(nullptr, key, value);
   }
 
+  using WriteBatchBase::Delete;
+  // If the database contains a mapping for "key", erase it.  Else do nothing.
+  void Delete(ColumnFamilyHandle* column_family, const Slice& key) override;
+  void Delete(const Slice& key) override { Delete(nullptr, key); }
+
+  // variant that takes SliceParts
+  void Delete(ColumnFamilyHandle* column_family,
+              const SliceParts& key) override;
+  void Delete(const SliceParts& key) override { Delete(nullptr, key); }
+
+  using WriteBatchBase::SingleDelete;
+  // WriteBatch implementation of DB::SingleDelete().  See db.h.
+  void SingleDelete(ColumnFamilyHandle* column_family,
+                    const Slice& key) override;
+  void SingleDelete(const Slice& key) override { SingleDelete(nullptr, key); }
+
+  // variant that takes SliceParts
+  void SingleDelete(ColumnFamilyHandle* column_family,
+                    const SliceParts& key) override;
+  void SingleDelete(const SliceParts& key) override {
+    SingleDelete(nullptr, key);
+  }
+
   using WriteBatchBase::Merge;
   // Merge "value" with the existing value of "key" in the database.
   // "key->merge(existing, value)"
@@ -75,16 +99,6 @@ class WriteBatch : public WriteBatchBase {
   void Merge(const SliceParts& key, const SliceParts& value) override {
     Merge(nullptr, key, value);
   }
-
-  using WriteBatchBase::Delete;
-  // If the database contains a mapping for "key", erase it.  Else do nothing.
-  void Delete(ColumnFamilyHandle* column_family, const Slice& key) override;
-  void Delete(const Slice& key) override { Delete(nullptr, key); }
-
-  // variant that takes SliceParts
-  void Delete(ColumnFamilyHandle* column_family,
-              const SliceParts& key) override;
-  void Delete(const SliceParts& key) override { Delete(nullptr, key); }
 
   using WriteBatchBase::PutLogData;
   // Append a blob of arbitrary size to the records in this batch. The blob will
@@ -133,7 +147,27 @@ class WriteBatch : public WriteBatchBase {
       return Status::InvalidArgument(
           "non-default column family and PutCF not implemented");
     }
-    virtual void Put(const Slice& key, const Slice& value) {}
+    virtual void Put(const Slice& /*key*/, const Slice& /*value*/) {}
+
+    virtual Status DeleteCF(uint32_t column_family_id, const Slice& key) {
+      if (column_family_id == 0) {
+        Delete(key);
+        return Status::OK();
+      }
+      return Status::InvalidArgument(
+          "non-default column family and DeleteCF not implemented");
+    }
+    virtual void Delete(const Slice& /*key*/) {}
+
+    virtual Status SingleDeleteCF(uint32_t column_family_id, const Slice& key) {
+      if (column_family_id == 0) {
+        SingleDelete(key);
+        return Status::OK();
+      }
+      return Status::InvalidArgument(
+          "non-default column family and SingleDeleteCF not implemented");
+    }
+    virtual void SingleDelete(const Slice& /*key*/) {}
 
     // Merge and LogData are not pure virtual. Otherwise, we would break
     // existing clients of Handler on a source code level. The default
@@ -147,19 +181,10 @@ class WriteBatch : public WriteBatchBase {
       return Status::InvalidArgument(
           "non-default column family and MergeCF not implemented");
     }
-    virtual void Merge(const Slice& key, const Slice& value) {}
+    virtual void Merge(const Slice& /*key*/, const Slice& /*value*/) {}
 
     // The default implementation of LogData does nothing.
     virtual void LogData(const Slice& blob);
-    virtual Status DeleteCF(uint32_t column_family_id, const Slice& key) {
-      if (column_family_id == 0) {
-        Delete(key);
-        return Status::OK();
-      }
-      return Status::InvalidArgument(
-          "non-default column family and DeleteCF not implemented");
-    }
-    virtual void Delete(const Slice& key) {}
 
     // Continue is called by WriteBatch::Iterate. If it returns false,
     // iteration is halted. Otherwise, it continues iterating. The default
@@ -177,15 +202,38 @@ class WriteBatch : public WriteBatchBase {
   // Returns the number of updates in the batch
   int Count() const;
 
+  // Returns true if PutCF will be called during Iterate
+  bool HasPut() const;
+
+  // Returns true if DeleteCF will be called during Iterate
+  bool HasDelete() const;
+
+  // Returns true if SingleDeleteCF will be called during Iterate
+  bool HasSingleDelete() const;
+
+  // Returns trie if MergeCF will be called during Iterate
+  bool HasMerge() const;
+
   using WriteBatchBase::GetWriteBatch;
   WriteBatch* GetWriteBatch() override { return this; }
 
   // Constructor with a serialized string object
-  explicit WriteBatch(std::string rep) : save_points_(nullptr), rep_(rep) {}
+  explicit WriteBatch(const std::string& rep);
+
+  WriteBatch(const WriteBatch& src);
+  WriteBatch(WriteBatch&& src);
+  WriteBatch& operator=(const WriteBatch& src);
+  WriteBatch& operator=(WriteBatch&& src);
 
  private:
   friend class WriteBatchInternal;
   SavePoints* save_points_;
+
+  // For HasXYZ.  Mutable to allow lazy computation of results
+  mutable std::atomic<uint32_t> content_flags_;
+
+  // Performs deferred computation of content_flags if necessary
+  uint32_t ComputeContentFlags() const;
 
  protected:
   std::string rep_;  // See comment in write_batch.cc for the format of rep_

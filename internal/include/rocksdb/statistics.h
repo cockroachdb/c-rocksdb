@@ -45,6 +45,10 @@ enum Tickers : uint32_t {
   BLOCK_CACHE_DATA_MISS,
   // # of times cache hit when accessing data block from block cache.
   BLOCK_CACHE_DATA_HIT,
+  // # of bytes read from cache.
+  BLOCK_CACHE_BYTES_READ,
+  // # of bytes written into cache.
+  BLOCK_CACHE_BYTES_WRITE,
   // # of times bloom filter has avoided file reads.
   BLOOM_FILTER_USEFUL,
 
@@ -82,6 +86,17 @@ enum Tickers : uint32_t {
   // For the number of logical bytes read from DB::MultiGet(),
   // please use NUMBER_MULTIGET_BYTES_READ.
   BYTES_READ,
+  // The number of calls to seek/next/prev
+  NUMBER_DB_SEEK,
+  NUMBER_DB_NEXT,
+  NUMBER_DB_PREV,
+  // The number of calls to seek/next/prev that returned data
+  NUMBER_DB_SEEK_FOUND,
+  NUMBER_DB_NEXT_FOUND,
+  NUMBER_DB_PREV_FOUND,
+  // The number of uncompressed bytes read from an iterator.
+  // Includes size of key and value.
+  ITER_BYTES_READ,
   NO_FILE_CLOSES,
   NO_FILE_OPENS,
   NO_FILE_ERRORS,
@@ -166,6 +181,8 @@ const std::vector<std::pair<Tickers, std::string>> TickersNameMap = {
     {BLOCK_CACHE_FILTER_HIT, "rocksdb.block.cache.filter.hit"},
     {BLOCK_CACHE_DATA_MISS, "rocksdb.block.cache.data.miss"},
     {BLOCK_CACHE_DATA_HIT, "rocksdb.block.cache.data.hit"},
+    {BLOCK_CACHE_BYTES_READ, "rocksdb.block.cache.bytes.read"},
+    {BLOCK_CACHE_BYTES_WRITE, "rocksdb.block.cache.bytes.write"},
     {BLOOM_FILTER_USEFUL, "rocksdb.bloom.filter.useful"},
     {MEMTABLE_HIT, "rocksdb.memtable.hit"},
     {MEMTABLE_MISS, "rocksdb.memtable.miss"},
@@ -180,6 +197,13 @@ const std::vector<std::pair<Tickers, std::string>> TickersNameMap = {
     {NUMBER_KEYS_UPDATED, "rocksdb.number.keys.updated"},
     {BYTES_WRITTEN, "rocksdb.bytes.written"},
     {BYTES_READ, "rocksdb.bytes.read"},
+    {NUMBER_DB_SEEK, "rocksdb.number.db.seek"},
+    {NUMBER_DB_NEXT, "rocksdb.number.db.next"},
+    {NUMBER_DB_PREV, "rocksdb.number.db.prev"},
+    {NUMBER_DB_SEEK_FOUND, "rocksdb.number.db.seek.found"},
+    {NUMBER_DB_NEXT_FOUND, "rocksdb.number.db.next.found"},
+    {NUMBER_DB_PREV_FOUND, "rocksdb.number.db.prev.found"},
+    {ITER_BYTES_READ, "rocksdb.db.iter.bytes.read"},
     {NO_FILE_CLOSES, "rocksdb.no.file.closes"},
     {NO_FILE_OPENS, "rocksdb.no.file.opens"},
     {NO_FILE_ERRORS, "rocksdb.no.file.errors"},
@@ -253,6 +277,8 @@ enum Histograms : uint32_t {
   DB_SEEK,
   WRITE_STALL,
   SST_READ_MICROS,
+  // The number of subcompactions actually scheduled during a compaction
+  NUM_SUBCOMPACTIONS_SCHEDULED,
   HISTOGRAM_ENUM_MAX,  // TODO(ldemailly): enforce HistogramsNameMap match
 };
 
@@ -279,6 +305,7 @@ const std::vector<std::pair<Histograms, std::string>> HistogramsNameMap = {
     {DB_SEEK, "rocksdb.db.seek.micros"},
     {WRITE_STALL, "rocksdb.db.write.stall"},
     {SST_READ_MICROS, "rocksdb.sst.read.micros"},
+    {NUM_SUBCOMPACTIONS_SCHEDULED, "rocksdb.num.subcompactions.scheduled"},
 };
 
 struct HistogramData {

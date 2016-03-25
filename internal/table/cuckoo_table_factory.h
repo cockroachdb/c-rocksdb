@@ -55,16 +55,14 @@ class CuckooTableFactory : public TableFactory {
 
   const char* Name() const override { return "CuckooTable"; }
 
-  Status NewTableReader(const ImmutableCFOptions& ioptions,
-                        const EnvOptions& env_options,
-                        const InternalKeyComparator& internal_comparator,
+  Status NewTableReader(const TableReaderOptions& table_reader_options,
                         unique_ptr<RandomAccessFileReader>&& file,
                         uint64_t file_size,
                         unique_ptr<TableReader>* table) const override;
 
   TableBuilder* NewTableBuilder(
       const TableBuilderOptions& table_builder_options,
-      WritableFileWriter* file) const override;
+      uint32_t column_family_id, WritableFileWriter* file) const override;
 
   // Sanitizes the specified DB Options.
   Status SanitizeOptions(const DBOptions& db_opts,
@@ -74,8 +72,10 @@ class CuckooTableFactory : public TableFactory {
 
   std::string GetPrintableTableOptions() const override;
 
+  void* GetOptions() override { return &table_options_; }
+
  private:
-  const CuckooTableOptions table_options_;
+  CuckooTableOptions table_options_;
 };
 
 }  // namespace rocksdb

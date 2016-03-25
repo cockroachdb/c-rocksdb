@@ -13,11 +13,17 @@
 #        cd build
 # 3. Run cmake to generate project files for Windows, add more options to enable required third-party libraries.
 #    See thirdparty.inc for more information.
-#        cmake -G "Visual Studio 12 Win64" .. <more options>
-# 4. Then build the project in debug mode (you may want to add /m:<N> flag to run msbuild in <N> parallel threads)
-#        msbuild ALL_BUILD.vcxproj
-# 5. And release mode (/m:<N> is also supported)
-#        msbuild ALL_BUILD.vcxproj /p:Configuration=Release
+#        sample command: cmake -G "Visual Studio 12 Win64" -DGFLAGS=1 -DSNAPPY=1 -DJEMALLOC=1 ..
+#        OR for VS Studio 15 cmake -G "Visual Studio 14 Win64" -DGFLAGS=1 -DSNAPPY=1 -DJEMALLOC=1 ..
+# 4. Then build the project in debug mode (you may want to add /m[:<N>] flag to run msbuild in <N> parallel threads
+#                                          or simply /m ot use all avail cores)
+#        msbuild rocksdb.sln
+#
+#        rocksdb.sln build features exclusions of test only code in Release. If you build ALL_BUILD then everything
+#        will be attempted but test only code does not build in Release mode.
+#
+# 5. And release mode (/m[:<N>] is also supported)
+#        msbuild rocksdb.sln /p:Configuration=Release
 #
 
 cmake_minimum_required(VERSION 2.6)
@@ -31,7 +37,14 @@ string(REGEX REPLACE "(..)/(..)/..(..).*" "\\1/\\2/\\3" DATE ${DATE})
 string(REGEX REPLACE "(..):(.....).*" " \\1:\\2" TIME ${TIME})
 string(CONCAT GIT_DATE_TIME ${DATE} ${TIME})
 
-execute_process(COMMAND $ENV{COMSPEC} " /C git rev-parse HEAD 2>nil" OUTPUT_VARIABLE GIT_SHA)
+find_package(Git)
+
+if (GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+    execute_process(COMMAND $ENV{COMSPEC} /C ${GIT_EXECUTABLE} -C ${CMAKE_CURRENT_SOURCE_DIR} rev-parse HEAD OUTPUT_VARIABLE GIT_SHA)
+else()
+    set(GIT_SHA 0)
+endif()
+
 string(REGEX REPLACE "[^0-9a-f]+" "" GIT_SHA ${GIT_SHA})
 
 set(BUILD_VERSION_CC ${CMAKE_CURRENT_SOURCE_DIR}/util/build_version.cc)
@@ -45,19 +58,35 @@ add_custom_command(OUTPUT ${BUILD_VERSION_CC}
 
 add_custom_target(GenerateBuildVersion DEPENDS ${BUILD_VERSION_CC})
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zi /nologo /W3 /WX /EHsc /GS /fp:precise /Zc:wchar_t /Zc:forScope /Gd /TP /errorReport:queue")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /FC /d2Zi+ /wd4018 /wd4100 /wd4101 /wd4127 /wd4189 /wd4200 /wd4244 /wd4267 /wd4296 /wd4305 /wd4307 /wd4309 /wd4512 /wd4701 /wd4702 /wd4800 /wd4804 /wd4996")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zi /nologo  /EHsc /GS /Gd /GR /GF /fp:precise /Zc:wchar_t /Zc:forScope /errorReport:queue")
 
-set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Od /RTC1 /Gm /MDd")
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /Oi /Gm- /Gy /MD")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /FC /d2Zi+ /W3 /WX /wd4127 /wd4244 /wd4267 /wd4800 /wd4996")
 
+# Used to run CI build and tests so we can run faster
+set(OPTIMIZE_DEBUG_DEFAULT 0)        # Debug build is unoptimized by default use -DOPTDBG=1 to optimize
+
+if(DEFINED OPTDBG)
+   set(OPTIMIZE_DEBUG ${OPTDBG})
+else()
+   set(OPTIMIZE_DEBUG ${OPTIMIZE_DEBUG_DEFAULT})
+endif()
+
+if((${OPTIMIZE_DEBUG} EQUAL 1))
+   message(STATUS "Debug optimization is enabled")
+   set(CMAKE_CXX_FLAGS_DEBUG "/Oxt /MDd")
+else()
+   set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Od /RTC1 /Gm /MDd")
+endif()
+
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Oxt /Zp8 /Gm- /Gy /MD")
+
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /DEBUG")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /DEBUG")
 
 add_definitions(-DWIN32 -DOS_WIN -D_MBCS -DWIN64)
 
 include_directories(${PROJECT_SOURCE_DIR})
 include_directories(${PROJECT_SOURCE_DIR}/include)
-include_directories(${PROJECT_SOURCE_DIR}/port)
 include_directories(${PROJECT_SOURCE_DIR}/third-party/gtest-1.7.0/fused-src)
 
 set(ROCKSDB_LIBS rocksdblib${ARTIFACT_SUFFIX})
@@ -68,6 +97,7 @@ set(LIBS ${ROCKSDB_LIBS} ${THIRDPARTY_LIBS} ${SYSTEM_LIBS})
 
 add_subdirectory(third-party/gtest-1.7.0/fused-src/gtest)
 
+# Main library source code
 set(SOURCES
         db/builder.cc
         db/c.cc
@@ -115,6 +145,9 @@ set(SOURCES
         db/write_batch_base.cc
         db/write_controller.cc
         db/write_thread.cc
+        memtable/hash_cuckoo_rep.cc
+        memtable/hash_linklist_rep.cc
+        memtable/hash_skiplist_rep.cc
         port/stack_trace.cc
         port/win/env_win.cc
         port/win/port_win.cc
@@ -138,6 +171,7 @@ set(SOURCES
         table/get_context.cc
         table/iterator.cc
         table/merger.cc
+        table/sst_file_writer.cc
         table/meta_blocks.cc
         table/mock_table.cc
         table/plain_table_builder.cc
@@ -147,6 +181,8 @@ set(SOURCES
         table/plain_table_reader.cc
         table/table_properties.cc
         table/two_level_iterator.cc
+        tools/sst_dump_tool.cc
+        tools/dump/db_dump_tool.cc
         util/arena.cc
         util/auto_roll_logger.cc
         util/bloom.cc
@@ -158,7 +194,6 @@ set(SOURCES
         util/crc32c.cc
         util/db_info_dumper.cc
         util/delete_scheduler_impl.cc
-        util/db_test_util.cc
         util/dynamic_bloom.cc
         util/env.cc
         util/env_hdfs.cc
@@ -167,14 +202,11 @@ set(SOURCES
         util/file_reader_writer.cc
         util/filter_policy.cc
         util/hash.cc
-        util/hash_cuckoo_rep.cc
-        util/hash_linklist_rep.cc
-        util/hash_skiplist_rep.cc
         util/histogram.cc
         util/instrumented_mutex.cc
         util/iostats_context.cc
-        util/ldb_cmd.cc
-        util/ldb_tool.cc
+        tools/ldb_cmd.cc
+        tools/ldb_tool.cc
         util/logging.cc
         util/log_buffer.cc
         util/memenv.cc
@@ -184,12 +216,14 @@ set(SOURCES
         util/options.cc
         util/options_builder.cc
         util/options_helper.cc
+        util/options_parser.cc
+        util/options_sanity_check.cc
         util/perf_context.cc
         util/perf_level.cc
+        util/random.cc
         util/rate_limiter.cc
         util/skiplistrep.cc
         util/slice.cc
-        util/sst_dump_tool.cc
         util/statistics.cc
         util/status.cc
         util/status_message.cc
@@ -200,7 +234,6 @@ set(SOURCES
         util/thread_local.cc
         util/thread_status_impl.cc
         util/thread_status_updater.cc
-        util/thread_status_updater_debug.cc
         util/thread_status_util.cc
         util/thread_status_util_debug.cc
         util/vectorrep.cc
@@ -214,10 +247,12 @@ set(SOURCES
         utilities/flashcache/flashcache.cc
         utilities/geodb/geodb_impl.cc
         utilities/leveldb_options/leveldb_options.cc
+        utilities/memory/memory_util.cc
         utilities/merge_operators/string_append/stringappend.cc
         utilities/merge_operators/string_append/stringappend2.cc
         utilities/merge_operators/put.cc
         utilities/merge_operators/uint64add.cc
+        utilities/options/options_util.cc
         utilities/redis/redis_lists.cc
         utilities/spatialdb/spatial_db.cc
         utilities/table_properties_collectors/compact_on_deletion_collector.cc
@@ -234,6 +269,13 @@ set(SOURCES
         utilities/write_batch_with_index/write_batch_with_index_internal.cc
 )
 
+# For test util library that is build only in DEBUG mode
+# and linked to tests. Add test only code that is not #ifdefed for Release here.
+set(TESTUTIL_SOURCE
+    db/db_test_util.cc
+    util/thread_status_updater_debug.cc
+)
+
 add_library(rocksdblib${ARTIFACT_SUFFIX} ${SOURCES})
 set_target_properties(rocksdblib${ARTIFACT_SUFFIX} PROPERTIES COMPILE_FLAGS "/Fd${CMAKE_CFG_INTDIR}/rocksdblib${ARTIFACT_SUFFIX}.pdb")
 add_dependencies(rocksdblib${ARTIFACT_SUFFIX} GenerateBuildVersion)
@@ -248,6 +290,7 @@ set(APPS
         db/memtablerep_bench.cc
         table/table_reader_bench.cc
         tools/db_stress.cc
+        tools/write_stress.cc
         tools/db_repl_stress.cc
         tools/sst_dump.cc
         tools/dump/rocksdb_dump.cc
@@ -255,8 +298,9 @@ set(APPS
         util/cache_bench.cc
 )
 
+set(C_TESTS db/c_test.c)
+
 set(TESTS
-        db/c_test.c
         db/column_family_test.cc
         db/compact_files_test.cc
         db/compaction_job_test.cc
@@ -275,17 +319,21 @@ set(TESTS
         db/db_universal_compaction_test.cc
         db/db_wal_test.cc
         db/db_tailing_iter_test.cc
+        db/db_table_properties_test.cc
         db/dbformat_test.cc
         db/deletefile_test.cc
         db/fault_injection_test.cc
         db/file_indexer_test.cc
         db/filename_test.cc
         db/flush_job_test.cc
+        db/inlineskiplist_test.cc
         db/listener_test.cc
         db/log_test.cc
+        db/manual_compaction_test.cc
         db/memtable_list_test.cc
         db/merge_test.cc
         db/merge_helper_test.cc
+        db/options_file_test.cc
         db/perf_context_test.cc
         db/plain_table_db_test.cc
         db/prefix_test.cc
@@ -307,7 +355,9 @@ set(TESTS
         table/merger_test.cc
         table/table_test.cc
         tools/db_sanity_test.cc
+        tools/ldb_cmd_test.cc
         tools/reduce_levels_test.cc
+        tools/sst_dump_test.cc
         util/arena_test.cc
         util/autovector_test.cc
         util/auto_roll_logger_test.cc
@@ -322,13 +372,11 @@ set(TESTS
         util/file_reader_writer_test.cc
         util/heap_test.cc
         util/histogram_test.cc
-        util/manual_compaction_test.cc
         util/memenv_test.cc
         util/mock_env_test.cc
         util/options_test.cc
         util/rate_limiter_test.cc
         util/slice_transform_test.cc
-        util/sst_dump_test.cc
         util/thread_list_test.cc
         util/thread_local_test.cc
         utilities/backupable/backupable_db_test.cc
@@ -336,7 +384,9 @@ set(TESTS
         utilities/document/document_db_test.cc
         utilities/document/json_document_test.cc
         utilities/geodb/geodb_test.cc
+        utilities/memory/memory_test.cc
         utilities/merge_operators/string_append/stringappend_test.cc
+        utilities/options/options_util_test.cc
         utilities/redis/redis_lists_test.cc
         utilities/spatialdb/spatial_db_test.cc
         utilities/table_properties_collectors/compact_on_deletion_collector_test.cc
@@ -346,12 +396,51 @@ set(TESTS
         utilities/write_batch_with_index/write_batch_with_index_test.cc
 )
 
-set(EXES ${APPS} ${TESTS})
+set(EXES ${APPS})
 
 foreach(sourcefile ${EXES})
     string(REPLACE ".cc" "" exename ${sourcefile})
-    string(REPLACE ".c" "" exename ${exename})
     string(REGEX REPLACE "^((.+)/)+" "" exename ${exename})
     add_executable(${exename}${ARTIFACT_SUFFIX} ${sourcefile})
     target_link_libraries(${exename}${ARTIFACT_SUFFIX} ${LIBS})
 endforeach(sourcefile ${EXES})
+
+# test utilities are only build in debug
+set(TESTUTILLIB testutillib${ARTIFACT_SUFFIX})
+add_library(${TESTUTILLIB} STATIC ${TESTUTIL_SOURCE})
+set_target_properties(${TESTUTILLIB} PROPERTIES COMPILE_FLAGS "/Fd${CMAKE_CFG_INTDIR}/testutillib${ARTIFACT_SUFFIX}.pdb")
+set_target_properties(${TESTUTILLIB}
+      PROPERTIES EXCLUDE_FROM_DEFAULT_BUILD_RELEASE 1
+      EXCLUDE_FROM_DEFAULT_BUILD_MINRELEASE 1
+      EXCLUDE_FROM_DEFAULT_BUILD_RELWITHDEBINFO 1
+      )
+
+# Tests are excluded from Release builds
+set(TEST_EXES ${TESTS})
+
+foreach(sourcefile ${TEST_EXES})
+    string(REPLACE ".cc" "" exename ${sourcefile})
+    string(REGEX REPLACE "^((.+)/)+" "" exename ${exename})
+    add_executable(${exename}${ARTIFACT_SUFFIX} ${sourcefile})
+    set_target_properties(${exename}${ARTIFACT_SUFFIX}
+      PROPERTIES EXCLUDE_FROM_DEFAULT_BUILD_RELEASE 1
+      EXCLUDE_FROM_DEFAULT_BUILD_MINRELEASE 1
+      EXCLUDE_FROM_DEFAULT_BUILD_RELWITHDEBINFO 1
+      )
+    target_link_libraries(${exename}${ARTIFACT_SUFFIX} ${LIBS} testutillib${ARTIFACT_SUFFIX})
+endforeach(sourcefile ${TEST_EXES})
+
+# C executables must link to a shared object
+set(C_TEST_EXES ${C_TESTS})
+
+foreach(sourcefile ${C_TEST_EXES})
+    string(REPLACE ".c" "" exename ${sourcefile})
+    string(REGEX REPLACE "^((.+)/)+" "" exename ${exename})
+    add_executable(${exename}${ARTIFACT_SUFFIX} ${sourcefile})
+    set_target_properties(${exename}${ARTIFACT_SUFFIX}
+      PROPERTIES EXCLUDE_FROM_DEFAULT_BUILD_RELEASE 1
+      EXCLUDE_FROM_DEFAULT_BUILD_MINRELEASE 1
+      EXCLUDE_FROM_DEFAULT_BUILD_RELWITHDEBINFO 1
+      )
+    target_link_libraries(${exename}${ARTIFACT_SUFFIX} rocksdb${ARTIFACT_SUFFIX} testutillib${ARTIFACT_SUFFIX})
+endforeach(sourcefile ${C_TEST_EXES})

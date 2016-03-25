@@ -5,6 +5,7 @@
 #ifndef ROCKSDB_LITE
 #include "table/adaptive_table_factory.h"
 
+#include "table/table_builder.h"
 #include "table/format.h"
 #include "port/port.h"
 
@@ -40,8 +41,7 @@ extern const uint64_t kLegacyBlockBasedTableMagicNumber;
 extern const uint64_t kCuckooTableMagicNumber;
 
 Status AdaptiveTableFactory::NewTableReader(
-    const ImmutableCFOptions& ioptions, const EnvOptions& env_options,
-    const InternalKeyComparator& icomp,
+    const TableReaderOptions& table_reader_options,
     unique_ptr<RandomAccessFileReader>&& file, uint64_t file_size,
     unique_ptr<TableReader>* table) const {
   Footer footer;
@@ -52,23 +52,24 @@ Status AdaptiveTableFactory::NewTableReader(
   if (footer.table_magic_number() == kPlainTableMagicNumber ||
       footer.table_magic_number() == kLegacyPlainTableMagicNumber) {
     return plain_table_factory_->NewTableReader(
-        ioptions, env_options, icomp, std::move(file), file_size, table);
+        table_reader_options, std::move(file), file_size, table);
   } else if (footer.table_magic_number() == kBlockBasedTableMagicNumber ||
       footer.table_magic_number() == kLegacyBlockBasedTableMagicNumber) {
     return block_based_table_factory_->NewTableReader(
-        ioptions, env_options, icomp, std::move(file), file_size, table);
+        table_reader_options, std::move(file), file_size, table);
   } else if (footer.table_magic_number() == kCuckooTableMagicNumber) {
     return cuckoo_table_factory_->NewTableReader(
-        ioptions, env_options, icomp, std::move(file), file_size, table);
+        table_reader_options, std::move(file), file_size, table);
   } else {
     return Status::NotSupported("Unidentified table format");
   }
 }
 
 TableBuilder* AdaptiveTableFactory::NewTableBuilder(
-    const TableBuilderOptions& table_builder_options,
+    const TableBuilderOptions& table_builder_options, uint32_t column_family_id,
     WritableFileWriter* file) const {
-  return table_factory_to_write_->NewTableBuilder(table_builder_options, file);
+  return table_factory_to_write_->NewTableBuilder(table_builder_options,
+                                                  column_family_id, file);
 }
 
 std::string AdaptiveTableFactory::GetPrintableTableOptions() const {

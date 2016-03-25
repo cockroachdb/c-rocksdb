@@ -24,10 +24,32 @@
 
 namespace rocksdb {
 
-class Iterator {
+class Cleanable {
  public:
-  Iterator();
-  virtual ~Iterator();
+  Cleanable();
+  ~Cleanable();
+  // Clients are allowed to register function/arg1/arg2 triples that
+  // will be invoked when this iterator is destroyed.
+  //
+  // Note that unlike all of the preceding methods, this method is
+  // not abstract and therefore clients should not override it.
+  typedef void (*CleanupFunction)(void* arg1, void* arg2);
+  void RegisterCleanup(CleanupFunction function, void* arg1, void* arg2);
+
+ protected:
+  struct Cleanup {
+    CleanupFunction function;
+    void* arg1;
+    void* arg2;
+    Cleanup* next;
+  };
+  Cleanup cleanup_;
+};
+
+class Iterator : public Cleanable {
+ public:
+  Iterator() {}
+  virtual ~Iterator() {}
 
   // An iterator is either positioned at a key/value pair, or
   // not valid.  This method returns true iff the iterator is valid.
@@ -73,23 +95,7 @@ class Iterator {
   // satisfied without doing some IO, then this returns Status::Incomplete().
   virtual Status status() const = 0;
 
-  // Clients are allowed to register function/arg1/arg2 triples that
-  // will be invoked when this iterator is destroyed.
-  //
-  // Note that unlike all of the preceding methods, this method is
-  // not abstract and therefore clients should not override it.
-  typedef void (*CleanupFunction)(void* arg1, void* arg2);
-  void RegisterCleanup(CleanupFunction function, void* arg1, void* arg2);
-
  private:
-  struct Cleanup {
-    CleanupFunction function;
-    void* arg1;
-    void* arg2;
-    Cleanup* next;
-  };
-  Cleanup cleanup_;
-
   // No copying allowed
   Iterator(const Iterator&);
   void operator=(const Iterator&);

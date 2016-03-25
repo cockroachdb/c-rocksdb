@@ -63,6 +63,18 @@ class StackableDB : public DB {
     return db_->MultiGet(options, column_family, keys, values);
   }
 
+  using DB::AddFile;
+  virtual Status AddFile(ColumnFamilyHandle* column_family,
+                         const ExternalSstFileInfo* file_info,
+                         bool move_file) override {
+    return db_->AddFile(column_family, file_info, move_file);
+  }
+  virtual Status AddFile(ColumnFamilyHandle* column_family,
+                         const std::string& file_path,
+                         bool move_file) override {
+    return db_->AddFile(column_family, file_path, move_file);
+  }
+
   using DB::KeyMayExist;
   virtual bool KeyMayExist(const ReadOptions& options,
                            ColumnFamilyHandle* column_family, const Slice& key,
@@ -76,6 +88,13 @@ class StackableDB : public DB {
                         ColumnFamilyHandle* column_family,
                         const Slice& key) override {
     return db_->Delete(wopts, column_family, key);
+  }
+
+  using DB::SingleDelete;
+  virtual Status SingleDelete(const WriteOptions& wopts,
+                              ColumnFamilyHandle* column_family,
+                              const Slice& key) override {
+    return db_->SingleDelete(wopts, column_family, key);
   }
 
   using DB::Merge;
@@ -125,11 +144,18 @@ class StackableDB : public DB {
     return db_->GetIntProperty(column_family, property, value);
   }
 
+  using DB::GetAggregatedIntProperty;
+  virtual bool GetAggregatedIntProperty(const Slice& property,
+                                        uint64_t* value) override {
+    return db_->GetAggregatedIntProperty(property, value);
+  }
+
   using DB::GetApproximateSizes;
   virtual void GetApproximateSizes(ColumnFamilyHandle* column_family,
                                    const Range* r, int n, uint64_t* sizes,
                                    bool include_memtable = false) override {
-      return db_->GetApproximateSizes(column_family, r, n, sizes);
+    return db_->GetApproximateSizes(column_family, r, n, sizes,
+                                    include_memtable);
   }
 
   using DB::CompactRange;
@@ -148,6 +174,18 @@ class StackableDB : public DB {
     return db_->CompactFiles(
         compact_options, column_family, input_file_names,
         output_level, output_path_id);
+  }
+
+  virtual Status PauseBackgroundWork() override {
+    return db_->PauseBackgroundWork();
+  }
+  virtual Status ContinueBackgroundWork() override {
+    return db_->ContinueBackgroundWork();
+  }
+
+  virtual Status EnableAutoCompaction(
+      const std::vector<ColumnFamilyHandle*>& column_family_handles) override {
+    return db_->EnableAutoCompaction(column_family_handles);
   }
 
   using DB::NumberLevels;
@@ -241,9 +279,10 @@ class StackableDB : public DB {
   }
 
   using DB::SetOptions;
-  virtual Status SetOptions(
-    const std::unordered_map<std::string, std::string>& new_options) override {
-    return db_->SetOptions(new_options);
+  virtual Status SetOptions(ColumnFamilyHandle* column_family_handle,
+                            const std::unordered_map<std::string, std::string>&
+                                new_options) override {
+    return db_->SetOptions(column_family_handle, new_options);
   }
 
   using DB::GetPropertiesOfAllTables;
@@ -251,6 +290,13 @@ class StackableDB : public DB {
       ColumnFamilyHandle* column_family,
       TablePropertiesCollection* props) override {
     return db_->GetPropertiesOfAllTables(column_family, props);
+  }
+
+  using DB::GetPropertiesOfTablesInRange;
+  virtual Status GetPropertiesOfTablesInRange(
+      ColumnFamilyHandle* column_family, const Range* range, std::size_t n,
+      TablePropertiesCollection* props) override {
+    return db_->GetPropertiesOfTablesInRange(column_family, range, n, props);
   }
 
   virtual Status GetUpdatesSince(

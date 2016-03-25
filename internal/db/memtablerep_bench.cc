@@ -132,8 +132,6 @@ DEFINE_int64(seed, 0,
              "Seed base for random number generators. "
              "When 0 it is deterministic.");
 
-static rocksdb::Env* FLAGS_env = rocksdb::Env::Default();
-
 namespace rocksdb {
 
 namespace {
@@ -592,6 +590,7 @@ int main(int argc, char** argv) {
   std::unique_ptr<rocksdb::MemTableRepFactory> factory;
   if (FLAGS_memtablerep == "skiplist") {
     factory.reset(new rocksdb::SkipListFactory);
+#ifndef ROCKSDB_LITE
   } else if (FLAGS_memtablerep == "vector") {
     factory.reset(new rocksdb::VectorRepFactory);
   } else if (FLAGS_memtablerep == "hashskiplist") {
@@ -613,6 +612,7 @@ int main(int argc, char** argv) {
         static_cast<uint32_t>(FLAGS_hash_function_count)));
     options.prefix_extractor.reset(
         rocksdb::NewFixedPrefixTransform(FLAGS_prefix_length));
+#endif  // ROCKSDB_LITE
   } else {
     fprintf(stdout, "Unknown memtablerep: %s\n", FLAGS_memtablerep.c_str());
     exit(1);

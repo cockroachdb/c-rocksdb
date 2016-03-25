@@ -27,9 +27,9 @@
 #include "db/version_set.h"
 #include "db/write_controller.h"
 #include "db/writebuffer.h"
+#include "memtable/hash_skiplist_rep.h"
 #include "util/autovector.h"
 #include "util/compression.h"
-#include "util/hash_skiplist_rep.h"
 #include "util/options_helper.h"
 #include "util/thread_status_util.h"
 #include "util/xfunc.h"
@@ -173,6 +173,12 @@ ColumnFamilyOptions SanitizeOptions(const DBOptions& db_options,
     result.level0_file_num_compaction_trigger = std::numeric_limits<int>::max();
     result.level0_slowdown_writes_trigger = std::numeric_limits<int>::max();
     result.level0_stop_writes_trigger = std::numeric_limits<int>::max();
+  }
+
+  if (result.level0_file_num_compaction_trigger == 0) {
+    Warn(db_options.info_log.get(),
+         "level0_file_num_compaction_trigger cannot be 0");
+    result.level0_file_num_compaction_trigger = 1;
   }
 
   if (result.level0_stop_writes_trigger <
@@ -446,15 +452,33 @@ void ColumnFamilyData::RecalculateWriteStallConditions(
     } else if (vstorage->l0_delay_trigger_count() >=
                mutable_cf_options.level0_stop_writes_trigger) {
       write_controller_token_ = write_controller->GetStopToken();
-      internal_stats_->AddCFStats(InternalStats::LEVEL0_NUM_FILES, 1);
+      internal_stats_->AddCFStats(InternalStats::LEVEL0_NUM_FILES_TOTAL, 1);
+      if (compaction_picker_->IsLevel0CompactionInProgress()) {
+        internal_stats_->AddCFStats(
+            InternalStats::LEVEL0_NUM_FILES_WITH_COMPACTION, 1);
+      }
       Log(InfoLogLevel::WARN_LEVEL, ioptions_.info_log,
           "[%s] Stopping writes because we have %d level-0 files",
           name_.c_str(), vstorage->l0_delay_trigger_count());
+    } else if (mutable_cf_options.hard_pending_compaction_bytes_limit > 0 &&
+               vstorage->estimated_compaction_needed_bytes() >=
+                   mutable_cf_options.hard_pending_compaction_bytes_limit) {
+      write_controller_token_ = write_controller->GetStopToken();
+      internal_stats_->AddCFStats(
+          InternalStats::HARD_PENDING_COMPACTION_BYTES_LIMIT, 1);
+      Log(InfoLogLevel::WARN_LEVEL, ioptions_.info_log,
+          "[%s] Stopping writes because estimated pending compaction "
+          "bytes exceed %" PRIu64,
+          name_.c_str(), vstorage->estimated_compaction_needed_bytes());
     } else if (mutable_cf_options.level0_slowdown_writes_trigger >= 0 &&
                vstorage->l0_delay_trigger_count() >=
                    mutable_cf_options.level0_slowdown_writes_trigger) {
       write_controller_token_ = write_controller->GetDelayToken();
-      internal_stats_->AddCFStats(InternalStats::LEVEL0_SLOWDOWN, 1);
+      internal_stats_->AddCFStats(InternalStats::LEVEL0_SLOWDOWN_TOTAL, 1);
+      if (compaction_picker_->IsLevel0CompactionInProgress()) {
+        internal_stats_->AddCFStats(
+            InternalStats::LEVEL0_SLOWDOWN_WITH_COMPACTION, 1);
+      }
       Log(InfoLogLevel::WARN_LEVEL, ioptions_.info_log,
           "[%s] Stalling writes because we have %d level-0 files",
           name_.c_str(), vstorage->l0_delay_trigger_count());

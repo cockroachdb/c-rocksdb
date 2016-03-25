@@ -57,7 +57,7 @@ void PrintLevelStats(char* buf, size_t len, const std::string& name,
       NumberToHumanString(stats.num_dropped_records);
 
   snprintf(buf, len,
-           "%4s %6d/%-3d %8.0f %5.1f " /* Level, Files, Size(MB), Score */
+           "%4s %6d/%-3d %8.2f %5.1f " /* Level, Files, Size(MB), Score */
            "%8.1f "                    /* Read(GB) */
            "%7.1f "                    /* Rn(GB) */
            "%8.1f "                    /* Rnp1(GB) */
@@ -130,6 +130,8 @@ static const std::string aggregated_table_properties =
     "aggregated-table-properties";
 static const std::string aggregated_table_properties_at_level =
     aggregated_table_properties + "-at-level";
+static const std::string num_running_compactions = "num-running-compactions";
+static const std::string num_running_flushes = "num-running-flushes";
 
 const std::string DB::Properties::kNumFilesAtLevelPrefix =
                       rocksdb_prefix + num_files_at_level_prefix;
@@ -143,6 +145,10 @@ const std::string DB::Properties::kMemTableFlushPending =
                       rocksdb_prefix + mem_table_flush_pending;
 const std::string DB::Properties::kCompactionPending =
                       rocksdb_prefix + compaction_pending;
+const std::string DB::Properties::kNumRunningCompactions =
+    rocksdb_prefix + num_running_compactions;
+const std::string DB::Properties::kNumRunningFlushes =
+    rocksdb_prefix + num_running_flushes;
 const std::string DB::Properties::kBackgroundErrors =
                       rocksdb_prefix + background_errors;
 const std::string DB::Properties::kCurSizeActiveMemTable =
@@ -260,6 +266,10 @@ DBPropertyType GetPropertyType(const Slice& property, bool* is_int_property,
     return kTotalSstFilesSize;
   } else if (in == estimate_pending_comp_bytes) {
     return kEstimatePendingCompactionBytes;
+  } else if (in == num_running_flushes) {
+    return kNumRunningFlushes;
+  } else if (in == num_running_compactions) {
+    return kNumRunningCompactions;
   }
   return kUnknown;
 }
@@ -388,10 +398,16 @@ bool InternalStats::GetIntProperty(DBPropertyType property_type,
       // Return number of mem tables that are ready to flush (made immutable)
       *value = (cfd_->imm()->IsFlushPending() ? 1 : 0);
       return true;
+    case kNumRunningFlushes:
+      *value = db->num_running_flushes();
+      return true;
     case kCompactionPending:
       // 1 if the system already determines at least one compaction is needed.
       // 0 otherwise,
       *value = (cfd_->compaction_picker()->NeedsCompaction(vstorage) ? 1 : 0);
+      return true;
+    case kNumRunningCompactions:
+      *value = db->num_running_compactions_;
       return true;
     case kBackgroundErrors:
       // Accumulated number of  errors in background flushes or compactions.
@@ -669,12 +685,13 @@ void InternalStats::DumpCFStats(std::string* value) {
     total_files += files;
     total_files_being_compacted += files_being_compacted[level];
     if (comp_stats_[level].micros > 0 || files > 0) {
-      uint64_t stalls = level == 0 ?
-        (cf_stats_count_[LEVEL0_SLOWDOWN] +
-         cf_stats_count_[LEVEL0_NUM_FILES] +
-         cf_stats_count_[MEMTABLE_COMPACTION])
-        : (stall_leveln_slowdown_count_soft_[level] +
-           stall_leveln_slowdown_count_hard_[level]);
+      uint64_t stalls =
+          level == 0 ? (cf_stats_count_[LEVEL0_SLOWDOWN_TOTAL] +
+                        cf_stats_count_[LEVEL0_NUM_FILES_TOTAL] +
+                        cf_stats_count_[HARD_PENDING_COMPACTION_BYTES_LIMIT] +
+                        cf_stats_count_[MEMTABLE_COMPACTION])
+                     : (stall_leveln_slowdown_count_soft_[level] +
+                        stall_leveln_slowdown_count_hard_[level]);
 
       stats_sum.Add(comp_stats_[level]);
       total_file_size += vstorage->NumLevelBytes(level);
@@ -716,15 +733,28 @@ void InternalStats::DumpCFStats(std::string* value) {
            curr_ingest / kGB, interval_ingest / kGB);
   value->append(buf);
 
-  snprintf(buf, sizeof(buf),
-           "Stalls(count): %" PRIu64 " level0_slowdown, "
-           "%" PRIu64 " level0_numfiles, %" PRIu64 " memtable_compaction, "
-           "%" PRIu64 " leveln_slowdown_soft, "
-           "%" PRIu64 " leveln_slowdown_hard\n",
-           cf_stats_count_[LEVEL0_SLOWDOWN],
-           cf_stats_count_[LEVEL0_NUM_FILES],
-           cf_stats_count_[MEMTABLE_COMPACTION],
-           total_slowdown_count_soft, total_slowdown_count_hard);
+  snprintf(buf, sizeof(buf), "Stalls(count): %" PRIu64
+                             " level0_slowdown, "
+                             "%" PRIu64
+                             " level0_slowdown_with_compaction, "
+                             "%" PRIu64
+                             " level0_numfiles, "
+                             "%" PRIu64
+                             " level0_numfiles_with_compaction, "
+                             "%" PRIu64
+                             " pending_compaction_bytes, "
+                             "%" PRIu64
+                             " memtable_compaction, "
+                             "%" PRIu64
+                             " leveln_slowdown_soft, "
+                             "%" PRIu64 " leveln_slowdown_hard\n",
+           cf_stats_count_[LEVEL0_SLOWDOWN_TOTAL],
+           cf_stats_count_[LEVEL0_SLOWDOWN_WITH_COMPACTION],
+           cf_stats_count_[LEVEL0_NUM_FILES_TOTAL],
+           cf_stats_count_[LEVEL0_NUM_FILES_WITH_COMPACTION],
+           cf_stats_count_[HARD_PENDING_COMPACTION_BYTES_LIMIT],
+           cf_stats_count_[MEMTABLE_COMPACTION], total_slowdown_count_soft,
+           total_slowdown_count_hard);
   value->append(buf);
 
   cf_stats_snapshot_.ingest_bytes = curr_ingest;

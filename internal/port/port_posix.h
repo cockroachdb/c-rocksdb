@@ -32,14 +32,11 @@
   #else
     #define PLATFORM_IS_LITTLE_ENDIAN false
   #endif
-#elif defined(OS_FREEBSD)
+#elif defined(OS_FREEBSD) || defined(OS_OPENBSD) || defined(OS_NETBSD) || \
+    defined(OS_DRAGONFLYBSD) || defined(OS_ANDROID)
   #include <sys/endian.h>
   #include <sys/types.h>
   #define PLATFORM_IS_LITTLE_ENDIAN (_BYTE_ORDER == _LITTLE_ENDIAN)
-#elif defined(OS_OPENBSD) || defined(OS_NETBSD) ||\
-      defined(OS_DRAGONFLYBSD) || defined(OS_ANDROID)
-  #include <sys/types.h>
-  #include <sys/endian.h>
 #else
   #include <endian.h>
 #endif
@@ -82,6 +79,7 @@ namespace port {
 // For use at db/file_indexer.h kLevelMaxIndex
 const int kMaxInt32 = std::numeric_limits<int32_t>::max();
 const uint64_t kMaxUint64 = std::numeric_limits<uint64_t>::max();
+const size_t kMaxSizet = std::numeric_limits<size_t>::max();
 
 static const bool kLittleEndian = PLATFORM_IS_LITTLE_ENDIAN;
 #undef PLATFORM_IS_LITTLE_ENDIAN
@@ -158,4 +156,3 @@ extern int GetMaxOpenFiles();
 
 } // namespace port
 } // namespace rocksdb
-

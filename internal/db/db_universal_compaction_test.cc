@@ -7,9 +7,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
+#include "db/db_test_util.h"
 #include "port/stack_trace.h"
-#include "util/db_test_util.h"
-#if !(defined NDEBUG) || !defined(OS_WIN)
+#if !defined(ROCKSDB_LITE)
 #include "util/sync_point.h"
 
 namespace rocksdb {
@@ -112,6 +112,44 @@ class DelayFilterFactory : public CompactionFilterFactory {
 };
 }  // namespace
 
+// Make sure we don't trigger a problem if the trigger conditon is given
+// to be 0, which is invalid.
+TEST_P(DBTestUniversalCompaction, UniversalCompactionSingleSortedRun) {
+  Options options;
+  options = CurrentOptions(options);
+
+  options.compaction_style = kCompactionStyleUniversal;
+  options.num_levels = num_levels_;
+  // Config universal compaction to always compact to one single sorted run.
+  options.level0_file_num_compaction_trigger = 0;
+  options.compaction_options_universal.size_ratio = 10;
+  options.compaction_options_universal.min_merge_width = 2;
+  options.compaction_options_universal.max_size_amplification_percent = 1;
+
+  options.write_buffer_size = 105 << 10;  // 105KB
+  options.arena_block_size = 4 << 10;
+  options.target_file_size_base = 32 << 10;  // 32KB
+  // trigger compaction if there are >= 4 files
+  KeepFilterFactory* filter = new KeepFilterFactory(true);
+  filter->expect_manual_compaction_.store(false);
+  options.compaction_filter_factory.reset(filter);
+
+  DestroyAndReopen(options);
+  ASSERT_EQ(1, db_->GetOptions().level0_file_num_compaction_trigger);
+
+  Random rnd(301);
+  int key_idx = 0;
+
+  filter->expect_full_compaction_.store(true);
+
+  for (int num = 0; num < 16; num++) {
+    // Write 100KB file. And immediately it should be compacted to one file.
+    GenerateNewFile(&rnd, &key_idx);
+    dbfull()->TEST_WaitForCompact();
+    ASSERT_EQ(NumSortedRuns(0), 1);
+  }
+}
+
 // TODO(kailiu) The tests on UniversalCompaction has some issues:
 //  1. A lot of magic numbers ("11" or "12").
 //  2. Made assumption on the memtable flush conditions, which may change from
@@ -119,6 +157,7 @@ class DelayFilterFactory : public CompactionFilterFactory {
 TEST_P(DBTestUniversalCompaction, UniversalCompactionTrigger) {
   Options options;
   options.compaction_style = kCompactionStyleUniversal;
+  options.compaction_options_universal.size_ratio = 5;
   options.num_levels = num_levels_;
   options.write_buffer_size = 105 << 10;  // 105KB
   options.arena_block_size = 4 << 10;
@@ -851,7 +890,10 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionFourPaths) {
   options.db_paths.emplace_back(dbname_ + "_2", 300 * 1024);
   options.db_paths.emplace_back(dbname_ + "_3", 500 * 1024);
   options.db_paths.emplace_back(dbname_ + "_4", 1024 * 1024 * 1024);
+  options.memtable_factory.reset(
+      new SpecialSkipListFactory(KNumKeysByGenerateNewFile - 1));
   options.compaction_style = kCompactionStyleUniversal;
+  options.compaction_options_universal.size_ratio = 5;
   options.write_buffer_size = 110 << 10;  // 105KB
   options.arena_block_size = 4 << 10;
   options.level0_file_num_compaction_trigger = 2;
@@ -968,13 +1010,15 @@ TEST_P(DBTestUniversalCompaction, IncreaseUniversalCompactionNumLevels) {
   int max_key1 = 200;
   int max_key2 = 600;
   int max_key3 = 800;
+  const int KNumKeysPerFile = 10;
 
   // Stage 1: open a DB with universal compaction, num_levels=1
   Options options = CurrentOptions();
   options.compaction_style = kCompactionStyleUniversal;
   options.num_levels = 1;
-  options.write_buffer_size = 100 << 10;  // 100KB
+  options.write_buffer_size = 200 << 10;  // 200KB
   options.level0_file_num_compaction_trigger = 3;
+  options.memtable_factory.reset(new SpecialSkipListFactory(KNumKeysPerFile));
   options = CurrentOptions(options);
   CreateAndReopenWithCF({"pikachu"}, options);
 
@@ -1047,11 +1091,14 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionSecondPathRatio) {
   options.db_paths.emplace_back(dbname_, 500 * 1024);
   options.db_paths.emplace_back(dbname_ + "_2", 1024 * 1024 * 1024);
   options.compaction_style = kCompactionStyleUniversal;
+  options.compaction_options_universal.size_ratio = 5;
   options.write_buffer_size = 110 << 10;  // 105KB
   options.arena_block_size = 4 * 1024;
   options.arena_block_size = 4 << 10;
   options.level0_file_num_compaction_trigger = 2;
   options.num_levels = 1;
+  options.memtable_factory.reset(
+      new SpecialSkipListFactory(KNumKeysByGenerateNewFile - 1));
   options = CurrentOptions(options);
 
   std::vector<std::string> filenames;
@@ -1210,10 +1257,10 @@ INSTANTIATE_TEST_CASE_P(DBTestUniversalManualCompactionOutputPathId,
 
 }  // namespace rocksdb
 
-#endif  // !(defined NDEBUG) || !defined(OS_WIN)
+#endif  // !defined(ROCKSDB_LITE)
 
 int main(int argc, char** argv) {
-#if !(defined NDEBUG) || !defined(OS_WIN)
+#if !defined(ROCKSDB_LITE)
   rocksdb::port::InstallStackTraceHandler();
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

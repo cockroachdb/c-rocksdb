@@ -89,7 +89,9 @@ class BackupEngineImpl : public BackupEngine {
   BackupEngineImpl(Env* db_env, const BackupableDBOptions& options,
                    bool read_only = false);
   ~BackupEngineImpl();
-  Status CreateNewBackup(DB* db, bool flush_before_backup = false) override;
+  Status CreateNewBackup(DB* db, bool flush_before_backup = false,
+                         std::function<void()> progress_callback = []() {
+                         }) override;
   Status PurgeOldBackups(uint32_t num_backups_to_keep) override;
   Status DeleteBackup(BackupID backup_id) override;
   void StopBackup() override {
@@ -178,7 +180,8 @@ class BackupEngineImpl : public BackupEngine {
       return files_;
     }
 
-    Status LoadFromFile(const std::string& backup_dir);
+    Status LoadFromFile(const std::string& backup_dir,
+                        bool use_size_in_file_name);
     Status StoreToFile(bool sync);
 
     std::string GetInfoString() {
@@ -267,15 +270,11 @@ class BackupEngineImpl : public BackupEngine {
 
   Status PutLatestBackupFileContents(uint32_t latest_backup);
   // if size_limit == 0, there is no size limit, copy everything
-  Status CopyFile(const std::string& src,
-                  const std::string& dst,
-                  Env* src_env,
-                  Env* dst_env,
-                  bool sync,
-                  RateLimiter* rate_limiter,
-                  uint64_t* size = nullptr,
-                  uint32_t* checksum_value = nullptr,
-                  uint64_t size_limit = 0);
+  Status CopyFile(const std::string& src, const std::string& dst, Env* src_env,
+                  Env* dst_env, bool sync, RateLimiter* rate_limiter,
+                  uint64_t* size = nullptr, uint32_t* checksum_value = nullptr,
+                  uint64_t size_limit = 0,
+                  std::function<void()> progress_callback = []() {});
 
   Status CalculateChecksum(const std::string& src,
                            Env* src_env,
@@ -296,6 +295,7 @@ class BackupEngineImpl : public BackupEngine {
     RateLimiter* rate_limiter;
     uint64_t size_limit;
     std::promise<CopyResult> result;
+    std::function<void()> progress_callback;
 
     CopyWorkItem() {}
     CopyWorkItem(const CopyWorkItem&) = delete;
@@ -312,23 +312,22 @@ class BackupEngineImpl : public BackupEngine {
       rate_limiter = o.rate_limiter;
       size_limit = o.size_limit;
       result = std::move(o.result);
+      progress_callback = std::move(o.progress_callback);
       return *this;
     }
 
-    CopyWorkItem(std::string _src_path,
-                 std::string _dst_path,
-                 Env* _src_env,
-                 Env* _dst_env,
-                 bool _sync,
-                 RateLimiter* _rate_limiter,
-                 uint64_t _size_limit)
+    CopyWorkItem(std::string _src_path, std::string _dst_path, Env* _src_env,
+                 Env* _dst_env, bool _sync, RateLimiter* _rate_limiter,
+                 uint64_t _size_limit,
+                 std::function<void()> _progress_callback = []() {})
         : src_path(std::move(_src_path)),
           dst_path(std::move(_dst_path)),
           src_env(_src_env),
           dst_env(_dst_env),
           sync(_sync),
           rate_limiter(_rate_limiter),
-          size_limit(_size_limit) {}
+          size_limit(_size_limit),
+          progress_callback(_progress_callback) {}
   };
 
   struct BackupAfterCopyWorkItem {
@@ -388,19 +387,18 @@ class BackupEngineImpl : public BackupEngine {
   };
 
   bool initialized_;
+  std::mutex byte_report_mutex_;
   channel<CopyWorkItem> files_to_copy_;
   std::vector<std::thread> threads_;
 
   Status AddBackupFileWorkItem(
-          std::unordered_set<std::string>& live_dst_paths,
-          std::vector<BackupAfterCopyWorkItem>& backup_items_to_finish,
-          BackupID backup_id,
-          bool shared,
-          const std::string& src_dir,
-          const std::string& src_fname,  // starts with "/"
-          RateLimiter* rate_limiter,
-          uint64_t size_limit = 0,
-          bool shared_checksum = false);
+      std::unordered_set<std::string>& live_dst_paths,
+      std::vector<BackupAfterCopyWorkItem>& backup_items_to_finish,
+      BackupID backup_id, bool shared, const std::string& src_dir,
+      const std::string& src_fname,  // starts with "/"
+      RateLimiter* rate_limiter, uint64_t size_limit = 0,
+      bool shared_checksum = false,
+      std::function<void()> progress_callback = []() {});
 
   // backup state data
   BackupID latest_backup_id_;
@@ -545,7 +543,8 @@ Status BackupEngineImpl::Initialize() {
   } else {  // Load data from storage
     // load the backups if any
     for (auto& backup : backups_) {
-      Status s = backup.second->LoadFromFile(options_.backup_dir);
+      Status s = backup.second->LoadFromFile(
+          options_.backup_dir, options_.use_file_size_in_file_name);
       if (!s.ok()) {
         Log(options_.info_log, "Backup %u corrupted -- %s", backup.first,
             s.ToString().c_str());
@@ -578,15 +577,11 @@ Status BackupEngineImpl::Initialize() {
       CopyWorkItem work_item;
       while (files_to_copy_.read(work_item)) {
         CopyResult result;
-        result.status = CopyFile(work_item.src_path,
-                                 work_item.dst_path,
-                                 work_item.src_env,
-                                 work_item.dst_env,
-                                 work_item.sync,
-                                 work_item.rate_limiter,
-                                 &result.size,
-                                 &result.checksum_value,
-                                 work_item.size_limit);
+        result.status =
+            CopyFile(work_item.src_path, work_item.dst_path, work_item.src_env,
+                     work_item.dst_env, work_item.sync, work_item.rate_limiter,
+                     &result.size, &result.checksum_value, work_item.size_limit,
+                     work_item.progress_callback);
         work_item.result.set_value(std::move(result));
       }
     });
@@ -597,7 +592,8 @@ Status BackupEngineImpl::Initialize() {
   return Status::OK();
 }
 
-Status BackupEngineImpl::CreateNewBackup(DB* db, bool flush_before_backup) {
+Status BackupEngineImpl::CreateNewBackup(
+    DB* db, bool flush_before_backup, std::function<void()> progress_callback) {
   assert(initialized_);
   assert(!read_only_);
   Status s;
@@ -672,15 +668,12 @@ Status BackupEngineImpl::CreateNewBackup(DB* db, bool flush_before_backup) {
     // * if it's kTableFile, then it's shared
     // * if it's kDescriptorFile, limit the size to manifest_file_size
     s = AddBackupFileWorkItem(
-            live_dst_paths,
-            backup_items_to_finish,
-            new_backup_id,
-            options_.share_table_files && type == kTableFile,
-            db->GetName(),
-            live_files[i],
-            rate_limiter.get(),
-            (type == kDescriptorFile) ? manifest_file_size : 0,
-            options_.share_files_with_checksum && type == kTableFile);
+        live_dst_paths, backup_items_to_finish, new_backup_id,
+        options_.share_table_files && type == kTableFile, db->GetName(),
+        live_files[i], rate_limiter.get(),
+        (type == kDescriptorFile) ? manifest_file_size : 0,
+        options_.share_files_with_checksum && type == kTableFile,
+        progress_callback);
   }
   // Add a CopyWorkItem to the channel for each WAL file
   for (size_t i = 0; s.ok() && i < live_wal_files.size(); ++i) {
@@ -1085,13 +1078,12 @@ Status BackupEngineImpl::PutLatestBackupFileContents(uint32_t latest_backup) {
   return s;
 }
 
-Status BackupEngineImpl::CopyFile(
-    const std::string& src,
-    const std::string& dst, Env* src_env,
-    Env* dst_env, bool sync,
-    RateLimiter* rate_limiter, uint64_t* size,
-    uint32_t* checksum_value,
-    uint64_t size_limit) {
+Status BackupEngineImpl::CopyFile(const std::string& src,
+                                  const std::string& dst, Env* src_env,
+                                  Env* dst_env, bool sync,
+                                  RateLimiter* rate_limiter, uint64_t* size,
+                                  uint32_t* checksum_value, uint64_t size_limit,
+                                  std::function<void()> progress_callback) {
   Status s;
   unique_ptr<WritableFile> dst_file;
   unique_ptr<SequentialFile> src_file;
@@ -1125,6 +1117,7 @@ Status BackupEngineImpl::CopyFile(
   unique_ptr<char[]> buf(new char[copy_file_buffer_size_]);
   Slice data;
 
+  uint64_t processed_buffer_size = 0;
   do {
     if (stop_backup_.load(std::memory_order_acquire)) {
       return Status::Incomplete("Backup stopped");
@@ -1149,6 +1142,12 @@ Status BackupEngineImpl::CopyFile(
     if (rate_limiter != nullptr) {
       rate_limiter->Request(data.size(), Env::IO_LOW);
     }
+    processed_buffer_size += buffer_to_read;
+    if (processed_buffer_size > options_.callback_trigger_interval_size) {
+      processed_buffer_size -= options_.callback_trigger_interval_size;
+      std::lock_guard<std::mutex> lock(byte_report_mutex_);
+      progress_callback();
+    }
   } while (s.ok() && data.size() > 0 && size_limit > 0);
 
   if (s.ok() && sync) {
@@ -1160,15 +1159,12 @@ Status BackupEngineImpl::CopyFile(
 
 // src_fname will always start with "/"
 Status BackupEngineImpl::AddBackupFileWorkItem(
-        std::unordered_set<std::string>& live_dst_paths,
-        std::vector<BackupAfterCopyWorkItem>& backup_items_to_finish,
-        BackupID backup_id,
-        bool shared,
-        const std::string& src_dir,
-        const std::string& src_fname,
-        RateLimiter* rate_limiter,
-        uint64_t size_limit,
-        bool shared_checksum) {
+    std::unordered_set<std::string>& live_dst_paths,
+    std::vector<BackupAfterCopyWorkItem>& backup_items_to_finish,
+    BackupID backup_id, bool shared, const std::string& src_dir,
+    const std::string& src_fname, RateLimiter* rate_limiter,
+    uint64_t size_limit, bool shared_checksum,
+    std::function<void()> progress_callback) {
   assert(src_fname.size() > 0 && src_fname[0] == '/');
   std::string dst_relative = src_fname.substr(1);
   std::string dst_relative_tmp;
@@ -1252,13 +1248,9 @@ Status BackupEngineImpl::AddBackupFileWorkItem(
   if (need_to_copy) {
     Log(options_.info_log, "Copying %s to %s", src_fname.c_str(),
             dst_path_tmp.c_str());
-    CopyWorkItem copy_work_item(src_dir + src_fname,
-                                dst_path_tmp,
-                                db_env_,
-                                backup_env_,
-                                options_.sync,
-                                rate_limiter,
-                                size_limit);
+    CopyWorkItem copy_work_item(src_dir + src_fname, dst_path_tmp, db_env_,
+                                backup_env_, options_.sync, rate_limiter,
+                                size_limit, progress_callback);
     BackupAfterCopyWorkItem after_copy_work_item(
             copy_work_item.result.get_future(),
             shared,
@@ -1461,6 +1453,55 @@ Status BackupEngineImpl::BackupMeta::Delete(bool delete_meta) {
   return s;
 }
 
+namespace {
+bool ParseStrToUint64(const std::string& str, uint64_t* out) {
+  try {
+    unsigned long ul = std::stoul(str);
+    *out = static_cast<uint64_t>(ul);
+    return true;
+  } catch (const std::invalid_argument&) {
+    return false;
+  } catch (const std::out_of_range&) {
+    return false;
+  }
+}
+
+// Parse file name in the format of
+// "shared_checksum/<file_number>_<checksum>_<size>.sst, and fill `size` with
+// the parsed <size> part.
+// Will also accept only name part, or a file path in URL format.
+// if file name doesn't have the extension of "sst", or doesn't have '_' as a
+// part of the file name, or we can't parse a number from the sub string
+// between the last '_' and '.', return false.
+bool GetFileSizeFromBackupFileName(const std::string full_name,
+                                   uint64_t* size) {
+  auto dot_pos = full_name.find_last_of('.');
+  if (dot_pos == std::string::npos) {
+    return false;
+  }
+  if (full_name.substr(dot_pos + 1) != "sst") {
+    return false;
+  }
+  auto last_underscore_pos = full_name.find_last_of('_');
+  if (last_underscore_pos == std::string::npos) {
+    return false;
+  }
+  if (dot_pos <= last_underscore_pos + 2) {
+    return false;
+  }
+  return ParseStrToUint64(full_name.substr(last_underscore_pos + 1,
+                                           dot_pos - last_underscore_pos - 1),
+                          size);
+}
+}  // namespace
+
+namespace test {
+bool TEST_GetFileSizeFromBackupFileName(const std::string full_name,
+                                        uint64_t* size) {
+  return GetFileSizeFromBackupFileName(full_name, size);
+}
+}  // namespace test
+
 // each backup meta file is of the format:
 // <timestamp>
 // <seq number>
@@ -1468,8 +1509,8 @@ Status BackupEngineImpl::BackupMeta::Delete(bool delete_meta) {
 // <file1> <crc32(literal string)> <crc32_value>
 // <file2> <crc32(literal string)> <crc32_value>
 // ...
-Status BackupEngineImpl::BackupMeta::LoadFromFile(
-    const std::string& backup_dir) {
+Status BackupEngineImpl::BackupMeta::LoadFromFile(const std::string& backup_dir,
+                                                  bool use_size_in_file_name) {
   assert(Empty());
   Status s;
   unique_ptr<SequentialFile> backup_meta_file;
@@ -1511,9 +1552,12 @@ Status BackupEngineImpl::BackupMeta::LoadFromFile(
     if (file_info) {
       size = file_info->size;
     } else {
-      s = env_->GetFileSize(backup_dir + "/" + filename, &size);
-      if (!s.ok()) {
-        return s;
+      if (!use_size_in_file_name ||
+          !GetFileSizeFromBackupFileName(filename, &size)) {
+        s = env_->GetFileSize(backup_dir + "/" + filename, &size);
+        if (!s.ok()) {
+          return s;
+        }
       }
     }
 

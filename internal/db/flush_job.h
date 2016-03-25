@@ -27,12 +27,12 @@
 #include "rocksdb/env.h"
 #include "rocksdb/memtablerep.h"
 #include "rocksdb/transaction_log.h"
+#include "table/scoped_arena_iterator.h"
 #include "util/autovector.h"
 #include "util/event_logger.h"
 #include "util/instrumented_mutex.h"
 #include "util/stop_watch.h"
 #include "util/thread_local.h"
-#include "util/scoped_arena_iterator.h"
 #include "db/internal_stats.h"
 #include "db/write_controller.h"
 #include "db/flush_scheduler.h"
@@ -66,6 +66,7 @@ class FlushJob {
   ~FlushJob();
 
   Status Run(FileMetaData* file_meta = nullptr);
+  TableProperties GetTableProperties() const { return table_properties_; }
 
  private:
   void ReportStartedFlush();
@@ -89,6 +90,7 @@ class FlushJob {
   CompressionType output_compression_;
   Statistics* stats_;
   EventLogger* event_logger_;
+  TableProperties table_properties_;
 };
 
 }  // namespace rocksdb

@@ -8,15 +8,28 @@
 #include "util/random.h"
 
 int rocksdb_kill_odds = 0;
+std::vector<std::string> rocksdb_kill_prefix_blacklist;
 
 #ifndef NDEBUG
 namespace rocksdb {
 
-void TestKillRandom(int odds, const std::string& srcfile, int srcline) {
+void TestKillRandom(std::string kill_point, int odds,
+                    const std::string& srcfile, int srcline) {
+  for (auto& p : rocksdb_kill_prefix_blacklist) {
+    if (kill_point.substr(0, p.length()) == p) {
+      return;
+    }
+  }
+
   time_t curtime = time(nullptr);
   Random r((uint32_t)curtime);
 
   assert(odds > 0);
+  if (odds % 7 == 0) {
+    // class Rarndom uses multiplier 16807, which is 7^5. If odds are
+    // multiplier of 7, the first random value might have limited values.
+    odds++;
+  }
   bool crash = r.OneIn(odds);
   if (crash) {
     port::Crash(srcfile, srcline);

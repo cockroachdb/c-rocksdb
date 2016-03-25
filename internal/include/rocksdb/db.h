@@ -15,15 +15,16 @@
 #include <vector>
 #include <string>
 #include <unordered_map>
-#include "rocksdb/metadata.h"
-#include "rocksdb/version.h"
+#include "rocksdb/immutable_options.h"
 #include "rocksdb/iterator.h"
-#include "rocksdb/options.h"
-#include "rocksdb/types.h"
-#include "rocksdb/transaction_log.h"
 #include "rocksdb/listener.h"
+#include "rocksdb/metadata.h"
+#include "rocksdb/options.h"
 #include "rocksdb/snapshot.h"
 #include "rocksdb/thread_status.h"
+#include "rocksdb/transaction_log.h"
+#include "rocksdb/types.h"
+#include "rocksdb/version.h"
 
 #ifdef _WIN32
 // Windows API macro interference
@@ -42,6 +43,7 @@ struct FlushOptions;
 struct CompactionOptions;
 struct CompactRangeOptions;
 struct TableProperties;
+struct ExternalSstFileInfo;
 class WriteBatch;
 class Env;
 class EventListener;
@@ -184,6 +186,29 @@ class DB {
     return Delete(options, DefaultColumnFamily(), key);
   }
 
+  // Remove the database entry for "key". Requires that the key exists
+  // and was not overwritten. Returns OK on success, and a non-OK status
+  // on error.  It is not an error if "key" did not exist in the database.
+  //
+  // If a key is overwritten (by calling Put() multiple times), then the result
+  // of calling SingleDelete() on this key is undefined.  SingleDelete() only
+  // behaves correctly if there has been only one Put() for this key since the
+  // previous call to SingleDelete() for this key.
+  //
+  // This feature is currently an experimental performance optimization
+  // for a very specific workload.  It is up to the caller to ensure that
+  // SingleDelete is only used for a key that is not deleted using Delete() or
+  // written using Merge().  Mixing SingleDelete operations with Deletes and
+  // Merges can result in undefined behavior.
+  //
+  // Note: consider setting options.sync = true.
+  virtual Status SingleDelete(const WriteOptions& options,
+                              ColumnFamilyHandle* column_family,
+                              const Slice& key) = 0;
+  virtual Status SingleDelete(const WriteOptions& options, const Slice& key) {
+    return SingleDelete(options, DefaultColumnFamily(), key);
+  }
+
   // Merge the database entry for "key" with "value".  Returns OK on success,
   // and a non-OK status on error. The semantics of this operation is
   // determined by the user provided merge_operator when opening DB.
@@ -246,9 +271,10 @@ class DB {
   // This check is potentially lighter-weight than invoking DB::Get(). One way
   // to make this lighter weight is to avoid doing any IOs.
   // Default implementation here returns true and sets 'value_found' to false
-  virtual bool KeyMayExist(const ReadOptions& options,
-                           ColumnFamilyHandle* column_family, const Slice& key,
-                           std::string* value, bool* value_found = nullptr) {
+  virtual bool KeyMayExist(const ReadOptions& /*options*/,
+                           ColumnFamilyHandle* /*column_family*/,
+                           const Slice& /*key*/, std::string* /*value*/,
+                           bool* value_found = nullptr) {
     if (value_found != nullptr) {
       *value_found = false;
     }
@@ -312,34 +338,37 @@ class DB {
   //  "rocksdb.compaction-pending" - 1 if at least one compaction is pending
   //  "rocksdb.background-errors" - accumulated number of background errors
   //  "rocksdb.cur-size-active-mem-table"
-//  "rocksdb.size-all-mem-tables"
-//  "rocksdb.num-entries-active-mem-table"
-//  "rocksdb.num-entries-imm-mem-tables"
-//  "rocksdb.num-deletes-active-mem-table"
-//  "rocksdb.num-deletes-imm-mem-tables"
-//  "rocksdb.estimate-num-keys" - estimated keys in the column family
-//  "rocksdb.estimate-table-readers-mem" - estimated memory used for reding
-//      SST tables, that is not counted as a part of block cache.
-//  "rocksdb.is-file-deletions-enabled"
-//  "rocksdb.num-snapshots"
-//  "rocksdb.oldest-snapshot-time"
-//  "rocksdb.num-live-versions" - `version` is an internal data structure.
-//      See version_set.h for details. More live versions often mean more SST
-//      files are held from being deleted, by iterators or unfinished
-//      compactions.
-//  "rocksdb.estimate-live-data-size"
-//  "rocksdb.total-sst-files-size" - total size of all used sst files, this may
-//      slow down online queries if there are too many files.
-//  "rocksdb.base-level"
-//  "rocksdb.estimate-pending-compaction-bytes" - estimated total number of
-//      bytes compaction needs to rewrite the data to get all levels down
-//      to under target size. Not valid for other compactions than level-based.
-//  "rocksdb.aggregated-table-properties" - returns a string representation of
-//      the aggregated table properties of the target column family.
-//  "rocksdb.aggregated-table-properties-at-level<N>", same as the previous
-//      one but only returns the aggregated table properties of the specified
-//      level "N" at the target column family.
-//  replaced by the target level.
+  //  "rocksdb.size-all-mem-tables"
+  //  "rocksdb.num-entries-active-mem-table"
+  //  "rocksdb.num-entries-imm-mem-tables"
+  //  "rocksdb.num-deletes-active-mem-table"
+  //  "rocksdb.num-deletes-imm-mem-tables"
+  //  "rocksdb.estimate-num-keys" - estimated keys in the column family
+  //  "rocksdb.estimate-table-readers-mem" - estimated memory used for reding
+  //      SST tables, that is not counted as a part of block cache.
+  //  "rocksdb.is-file-deletions-enabled"
+  //  "rocksdb.num-snapshots"
+  //  "rocksdb.oldest-snapshot-time"
+  //  "rocksdb.num-live-versions" - `version` is an internal data structure.
+  //      See version_set.h for details. More live versions often mean more SST
+  //      files are held from being deleted, by iterators or unfinished
+  //      compactions.
+  //  "rocksdb.estimate-live-data-size"
+  //  "rocksdb.total-sst-files-size" - total size of all used sst files, this
+  //      may slow down online queries if there are too many files.
+  //  "rocksdb.base-level"
+  //  "rocksdb.estimate-pending-compaction-bytes" - estimated total number of
+  //      bytes compaction needs to rewrite the data to get all levels down
+  //      to under target size. Not valid for other compactions than
+  //      level-based.
+  //  "rocksdb.aggregated-table-properties" - returns a string representation
+  //      of the aggregated table properties of the target column family.
+  //  "rocksdb.aggregated-table-properties-at-level<N>", same as the previous
+  //      one but only returns the aggregated table properties of the specified
+  //      level "N" at the target column family.
+  //  "rocksdb.num-running-compactions" - the number of currently running
+  //      compacitons.
+  //  "rocksdb.num-running-flushes" - the number of currently running flushes.
 #ifndef ROCKSDB_LITE
   struct Properties {
     static const std::string kNumFilesAtLevelPrefix;
@@ -349,7 +378,9 @@ class DB {
     static const std::string kDBStats;
     static const std::string kNumImmutableMemTable;
     static const std::string kMemTableFlushPending;
+    static const std::string kNumRunningFlushes;
     static const std::string kCompactionPending;
+    static const std::string kNumRunningCompactions;
     static const std::string kBackgroundErrors;
     static const std::string kCurSizeActiveMemTable;
     static const std::string kCurSizeAllMemTables;
@@ -402,11 +433,18 @@ class DB {
   //  "rocksdb.total-sst-files-size"
   //  "rocksdb.base-level"
   //  "rocksdb.estimate-pending-compaction-bytes"
+  //  "rocksdb.num-running-compactions"
+  //  "rocksdb.num-running-flushes"
   virtual bool GetIntProperty(ColumnFamilyHandle* column_family,
                               const Slice& property, uint64_t* value) = 0;
   virtual bool GetIntProperty(const Slice& property, uint64_t* value) {
     return GetIntProperty(DefaultColumnFamily(), property, value);
   }
+
+  // Same as GetIntProperty(), but this one returns the aggregated int
+  // property from all column families.
+  virtual bool GetAggregatedIntProperty(const Slice& property,
+                                        uint64_t* value) = 0;
 
   // For each i in [0,n-1], store in "sizes[i]", the approximate
   // file system space used by keys in "[range[i].start .. range[i].limit)".
@@ -483,8 +521,9 @@ class DB {
     return CompactRange(options, DefaultColumnFamily(), begin, end);
   }
 
-  virtual Status SetOptions(ColumnFamilyHandle* column_family,
-      const std::unordered_map<std::string, std::string>& new_options) {
+  virtual Status SetOptions(
+      ColumnFamilyHandle* /*column_family*/,
+      const std::unordered_map<std::string, std::string>& /*new_options*/) {
     return Status::NotSupported("Not implemented");
   }
   virtual Status SetOptions(
@@ -512,6 +551,19 @@ class DB {
     return CompactFiles(compact_options, DefaultColumnFamily(),
                         input_file_names, output_level, output_path_id);
   }
+
+  // This function will wait until all currently running background processes
+  // finish. After it returns, no background process will be run until
+  // UnblockBackgroundWork is called
+  virtual Status PauseBackgroundWork() = 0;
+  virtual Status ContinueBackgroundWork() = 0;
+
+  // This function will enable automatic compactions for the given column
+  // families if they were previously disabled via the disable_auto_compactions
+  // option.
+  virtual Status EnableAutoCompaction(
+      const std::vector<ColumnFamilyHandle*>& column_family_handles) = 0;
+
   // Number of levels used for this DB.
   virtual int NumberLevels(ColumnFamilyHandle* column_family) = 0;
   virtual int NumberLevels() { return NumberLevels(DefaultColumnFamily()); }
@@ -627,7 +679,8 @@ class DB {
 
   // Returns a list of all table files with their level, start key
   // and end key
-  virtual void GetLiveFilesMetaData(std::vector<LiveFileMetaData>* metadata) {}
+  virtual void GetLiveFilesMetaData(
+      std::vector<LiveFileMetaData>* /*metadata*/) {}
 
   // Obtains the meta data of the specified column family of the DB.
   // Status::NotFound() will be returned if the current DB does not have
@@ -635,15 +688,42 @@ class DB {
   //
   // If cf_name is not specified, then the metadata of the default
   // column family will be returned.
-  virtual void GetColumnFamilyMetaData(
-      ColumnFamilyHandle* column_family,
-      ColumnFamilyMetaData* metadata) {}
+  virtual void GetColumnFamilyMetaData(ColumnFamilyHandle* /*column_family*/,
+                                       ColumnFamilyMetaData* /*metadata*/) {}
 
   // Get the metadata of the default column family.
   void GetColumnFamilyMetaData(
       ColumnFamilyMetaData* metadata) {
     GetColumnFamilyMetaData(DefaultColumnFamily(), metadata);
   }
+
+  // Load table file located at "file_path" into "column_family", a pointer to
+  // ExternalSstFileInfo can be used instead of "file_path" to do a blind add
+  // that wont need to read the file, move_file can be set to true to
+  // move the file instead of copying it.
+  //
+  // Current Requirements:
+  // (1) Key range in loaded table file don't overlap with
+  //     existing keys or tombstones in DB.
+  // (2) No other writes happen during AddFile call, otherwise
+  //     DB may get corrupted.
+  // (3) No snapshots are held.
+  virtual Status AddFile(ColumnFamilyHandle* column_family,
+                         const std::string& file_path,
+                         bool move_file = false) = 0;
+  virtual Status AddFile(const std::string& file_path, bool move_file = false) {
+    return AddFile(DefaultColumnFamily(), file_path, move_file);
+  }
+
+  // Load table file with information "file_info" into "column_family"
+  virtual Status AddFile(ColumnFamilyHandle* column_family,
+                         const ExternalSstFileInfo* file_info,
+                         bool move_file = false) = 0;
+  virtual Status AddFile(const ExternalSstFileInfo* file_info,
+                         bool move_file = false) {
+    return AddFile(DefaultColumnFamily(), file_info, move_file);
+  }
+
 #endif  // ROCKSDB_LITE
 
   // Sets the globally unique ID created at database creation time by invoking
@@ -660,6 +740,9 @@ class DB {
   virtual Status GetPropertiesOfAllTables(TablePropertiesCollection* props) {
     return GetPropertiesOfAllTables(DefaultColumnFamily(), props);
   }
+  virtual Status GetPropertiesOfTablesInRange(
+      ColumnFamilyHandle* column_family, const Range* range, std::size_t n,
+      TablePropertiesCollection* props) = 0;
 #endif  // ROCKSDB_LITE
 
   // Needed for StackableDB

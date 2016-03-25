@@ -31,6 +31,7 @@ namespace rocksdb {
 // -- Block-based Table
 class FlushBlockPolicyFactory;
 class RandomAccessFile;
+struct TableReaderOptions;
 struct TableBuilderOptions;
 class TableBuilder;
 class TableReader;
@@ -126,6 +127,20 @@ struct BlockBasedTableOptions {
   // If true, place whole keys in the filter (not just prefixes).
   // This must generally be true for gets to be efficient.
   bool whole_key_filtering = true;
+
+  // If true, block will not be explictly flushed to disk during building
+  // a SstTable. Instead, buffer in WritableFileWriter will take
+  // care of the flushing when it is full.
+  //
+  // On Windows, this option helps a lot when unbuffered I/O
+  // (allow_os_buffer = false) is used, since it avoids small
+  // unbuffered disk write.
+  //
+  // User may also adjust writable_file_max_buffer_size to optimize disk I/O
+  // size.
+  //
+  // Default: false
+  bool skip_table_builder_flush = false;
 
   // We currently have three versions:
   // 0 -- This version is currently written out by all RocksDB's versions by
@@ -335,21 +350,21 @@ class TableFactory {
   // in parameter file. It's the caller's responsibility to make sure
   // file is in the correct format.
   //
-  // NewTableReader() is called in two places:
+  // NewTableReader() is called in three places:
   // (1) TableCache::FindTable() calls the function when table cache miss
   //     and cache the table object returned.
-  // (1) SstFileReader (for SST Dump) opens the table and dump the table
+  // (2) SstFileReader (for SST Dump) opens the table and dump the table
   //     contents using the interator of the table.
-  // ImmutableCFOptions is a subset of Options that can not be altered.
-  // EnvOptions is a subset of Options that will be used by Env.
-  // Multiple configured can be accessed from there, including and not
-  // limited to block cache and key comparators.
-  // file is a file handler to handle the file for the table
-  // file_size is the physical file size of the file
-  // table_reader is the output table reader
+  // (3) DBImpl::AddFile() calls this function to read the contents of
+  //     the sst file it's attempting to add
+  //
+  // table_reader_options is a TableReaderOptions which contain all the
+  //    needed parameters and configuration to open the table.
+  // file is a file handler to handle the file for the table.
+  // file_size is the physical file size of the file.
+  // table_reader is the output table reader.
   virtual Status NewTableReader(
-      const ImmutableCFOptions& ioptions, const EnvOptions& env_options,
-      const InternalKeyComparator& internal_comparator,
+      const TableReaderOptions& table_reader_options,
       unique_ptr<RandomAccessFileReader>&& file, uint64_t file_size,
       unique_ptr<TableReader>* table_reader) const = 0;
 
@@ -374,7 +389,7 @@ class TableFactory {
   // to use in this table.
   virtual TableBuilder* NewTableBuilder(
       const TableBuilderOptions& table_builder_options,
-      WritableFileWriter* file) const = 0;
+      uint32_t column_family_id, WritableFileWriter* file) const = 0;
 
   // Sanitizes the specified DB Options and ColumnFamilyOptions.
   //
@@ -387,6 +402,22 @@ class TableFactory {
   // Return a string that contains printable format of table configurations.
   // RocksDB prints configurations at DB Open().
   virtual std::string GetPrintableTableOptions() const = 0;
+
+  // Returns the raw pointer of the table options that is used by this
+  // TableFactory, or nullptr if this function is not supported.
+  // Since the return value is a raw pointer, the TableFactory owns the
+  // pointer and the caller should not delete the pointer.
+  //
+  // In certan case, it is desirable to alter the underlying options when the
+  // TableFactory is not used by any open DB by casting the returned pointer
+  // to the right class.   For instance, if BlockBasedTableFactory is used,
+  // then the pointer can be casted to BlockBasedTableOptions.
+  //
+  // Note that changing the underlying TableFactory options while the
+  // TableFactory is currently used by any open DB is undefined behavior.
+  // Developers should use DB::SetOption() instead to dynamically change
+  // options while the DB is open.
+  virtual void* GetOptions() { return nullptr; }
 };
 
 #ifndef ROCKSDB_LITE

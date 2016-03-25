@@ -25,6 +25,7 @@
 #include <string>
 #include <string.h>
 #include <mutex>
+#include <limits>
 #include <condition_variable>
 
 #include <stdint.h>
@@ -41,11 +42,6 @@
 #define strcasecmp _stricmp
 #endif
 
-// defined in stdio.h
-#ifndef snprintf
-#define snprintf _snprintf
-#endif
-
 #undef GetCurrentTime
 #undef DeleteFile
 
@@ -57,8 +53,6 @@ typedef SSIZE_T ssize_t;
 #ifndef ROCKSDB_PRIszt
 #define ROCKSDB_PRIszt "Iu"
 #endif
-
-#define ROCKSDB_NOEXCEPT
 
 #define __attribute__(A)
 
@@ -96,9 +90,37 @@ std::string GetWindowsErrSz(DWORD err);
 
 namespace port {
 
+// VS 15
+#if (defined _MSC_VER) && (_MSC_VER >= 1900)
+
+#define ROCKSDB_NOEXCEPT noexcept
+
+// For use at db/file_indexer.h kLevelMaxIndex
+const int kMaxInt32 = std::numeric_limits<int>::max();
+const uint64_t kMaxUint64 = std::numeric_limits<uint64_t>::max();
+
+const size_t kMaxSizet = std::numeric_limits<size_t>::max();
+
+#else //_MSC_VER
+
+// VS 15 has snprintf
+#define snprintf _snprintf
+
+#define ROCKSDB_NOEXCEPT
+// std::numeric_limits<size_t>::max() is not constexpr just yet
+// therefore, use the same limits
+
 // For use at db/file_indexer.h kLevelMaxIndex
 const int kMaxInt32 = INT32_MAX;
 const uint64_t kMaxUint64 = UINT64_MAX;
+
+#ifdef _WIN64
+const size_t kMaxSizet = UINT64_MAX;
+#else
+const size_t kMaxSizet = UINT_MAX;
+#endif
+
+#endif //_MSC_VER
 
 const bool kLittleEndian = true;
 
@@ -106,29 +128,53 @@ class CondVar;
 
 class Mutex {
  public:
-  /* implicit */ Mutex(bool adaptive = false);
+
+   /* implicit */ Mutex(bool adaptive = false)
+#ifndef NDEBUG
+     : locked_(false)
+#endif
+   { }
+
   ~Mutex();
 
-  void Lock();
-  void Unlock();
+  void Lock() {
+    mutex_.lock();
+#ifndef NDEBUG
+    locked_ = true;
+#endif
+  }
+
+  void Unlock() {
+#ifndef NDEBUG
+    locked_ = false;
+#endif
+    mutex_.unlock();
+  }
 
   // this will assert if the mutex is not locked
   // it does NOT verify that mutex is held by a calling thread
-  void AssertHeld();
+  void AssertHeld() {
+#ifndef NDEBUG
+    assert(locked_);
+#endif
+  }
 
-  std::unique_lock<std::mutex>& getLock() { return lock; }
+  // Mutex is move only with lock ownership transfer
+  Mutex(const Mutex&) = delete;
+  void operator=(const Mutex&) = delete;
 
  private:
+
   friend class CondVar;
-  std::mutex m_mutex;
-  std::unique_lock<std::mutex> lock;
+
+  std::mutex& getLock() {
+    return mutex_;
+  }
+
+  std::mutex mutex_;
 #ifndef NDEBUG
   bool locked_;
 #endif
-
-  // No copying
-  Mutex(const Mutex&);
-  void operator=(const Mutex&);
 };
 
 class RWMutex {
@@ -155,30 +201,47 @@ class RWMutex {
 
 class CondVar {
  public:
-  explicit CondVar(Mutex* mu);
+  explicit CondVar(Mutex* mu) : mu_(mu) {
+  }
+
   ~CondVar();
   void Wait();
   bool TimedWait(uint64_t expiration_time);
   void Signal();
   void SignalAll();
 
+  // Condition var is not copy/move constructible
+  CondVar(const CondVar&) = delete;
+  CondVar& operator=(const CondVar&) = delete;
+
+  CondVar(CondVar&&) = delete;
+  CondVar& operator=(CondVar&&) = delete;
+
  private:
   std::condition_variable cv_;
   Mutex* mu_;
 };
 
-typedef std::once_flag OnceType;
-#define LEVELDB_ONCE_INIT std::once_flag::once_flag();
+
+// OnceInit type helps emulate
+// Posix semantics with initialization
+// adopted in the project
+struct OnceType {
+
+    struct Init {};
+
+    OnceType() {}
+    OnceType(const Init&) {}
+    OnceType(const OnceType&) = delete;
+    OnceType& operator=(const OnceType&) = delete;
+
+    std::once_flag flag_;
+};
+
+#define LEVELDB_ONCE_INIT port::OnceType::Init()
 extern void InitOnce(OnceType* once, void (*initializer)());
 
 #define CACHE_LINE_SIZE 64U
-
-#ifdef min
-#undef min
-#endif
-#ifdef max
-#undef max
-#endif
 
 // For Thread Local Storage abstraction
 typedef DWORD pthread_key_t;
@@ -240,4 +303,4 @@ using port::truncate;
 
 }  // namespace rocksdb
 
-#endif  // STORAGE_LEVELDB_PORT_PORT_POSIX_H_
+#endif  // STORAGE_LEVELDB_PORT_PORT_WIN_H_

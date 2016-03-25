@@ -204,15 +204,35 @@ class Compaction {
   // Should this compaction be broken up into smaller ones run in parallel?
   bool ShouldFormSubcompactions() const;
 
+  // test function to validate the functionality of IsBottommostLevel()
+  // function -- determines if compaction with inputs and storage is bottommost
+  static bool TEST_IsBottommostLevel(
+      int output_level, VersionStorageInfo* vstorage,
+      const std::vector<CompactionInputFiles>& inputs);
+
+  TablePropertiesCollection GetOutputTableProperties() const {
+    return output_table_properties_;
+  }
+
+  void SetOutputTableProperties(TablePropertiesCollection tp) {
+    output_table_properties_ = std::move(tp);
+  }
+
  private:
   // mark (or clear) all files that are being compacted
   void MarkFilesBeingCompacted(bool mark_as_compacted);
+
+  // get the smallest and largest key present in files to be compacted
+  static void GetBoundaryKeys(VersionStorageInfo* vstorage,
+                              const std::vector<CompactionInputFiles>& inputs,
+                              Slice* smallest_key, Slice* largest_key);
 
   // helper function to determine if compaction with inputs and storage is
   // bottommost
   static bool IsBottommostLevel(
       int output_level, VersionStorageInfo* vstorage,
       const std::vector<CompactionInputFiles>& inputs);
+
   static bool IsFullCompaction(VersionStorageInfo* vstorage,
                                const std::vector<CompactionInputFiles>& inputs);
 
@@ -261,6 +281,9 @@ class Compaction {
 
   // Does input compression match the output compression?
   bool InputCompressionMatchesOutput() const;
+
+  // table properties of output files
+  TablePropertiesCollection output_table_properties_;
 };
 
 // Utility function
