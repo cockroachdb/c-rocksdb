@@ -9,7 +9,7 @@ patch -p1 < gitignore.patch
 
 # symlink so cgo compiles them
 for source_file in $(make sources | grep -vE '(/redis/|_(cmd|tool).cc$)'); do
-  ln -sf $source_file .
+  ln -sf $source_file $(echo $source_file | sed s,/,_,g)
 done
 
 # manually use internal/build_tools/build_detect_platform to update the per-
