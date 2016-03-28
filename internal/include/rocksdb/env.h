@@ -68,6 +68,9 @@ struct EnvOptions {
    // If true, then use mmap to write data
   bool use_mmap_writes = true;
 
+  // If false, fallocate() calls are bypassed
+  bool allow_fallocate = true;
+
   // If true, set the FD_CLOEXEC on open fd.
   bool set_fd_cloexec = true;
 
@@ -84,6 +87,15 @@ struct EnvOptions {
   // write. By default, we set it to true for MANIFEST writes and false for
   // WAL writes
   bool fallocate_with_keep_size = true;
+
+  // See DBOPtions doc
+  size_t compaction_readahead_size;
+
+  // See DBOPtions doc
+  size_t random_access_max_buffer_size;
+
+  // See DBOptions doc
+  size_t writable_file_max_buffer_size = 1024 * 1024;
 
   // If not nullptr, write rate limiting is enabled for flush and compaction
   RateLimiter* rate_limiter = nullptr;
@@ -135,6 +147,12 @@ class Env {
   virtual Status NewWritableFile(const std::string& fname,
                                  unique_ptr<WritableFile>* result,
                                  const EnvOptions& options) = 0;
+
+  // Reuse an existing file by renaming it and opening it as writable.
+  virtual Status ReuseWritableFile(const std::string& fname,
+                                   const std::string& old_fname,
+                                   unique_ptr<WritableFile>* result,
+                                   const EnvOptions& options);
 
   // Create an object that represents a directory. Will fail if directory
   // doesn't exist. If the directory exists, it will open the directory
@@ -393,6 +411,16 @@ class RandomAccessFile {
   virtual Status Read(uint64_t offset, size_t n, Slice* result,
                       char* scratch) const = 0;
 
+  // Used by the file_reader_writer to decide if the ReadAhead wrapper
+  // should simply forward the call and do not enact buffering or locking.
+  virtual bool ShouldForwardRawRequest() const {
+    return false;
+  }
+
+  // For cases when read-ahead is implemented in the platform dependent
+  // layer
+  virtual void EnableReadAhead() {}
+
   // Tries to get an unique ID for this file that will be the same each time
   // the file is opened (and will stay the same while the file is open).
   // Furthermore, it tries to make this ID at most "max_size" bytes. If such an
@@ -412,7 +440,6 @@ class RandomAccessFile {
     return 0; // Default implementation to prevent issues with backwards
               // compatibility.
   };
-
 
   enum AccessPattern { NORMAL, RANDOM, SEQUENTIAL, WILLNEED, DONTNEED };
 
@@ -438,7 +465,35 @@ class WritableFile {
   }
   virtual ~WritableFile();
 
+  // Indicates if the class makes use of unbuffered I/O
+  virtual bool UseOSBuffer() const {
+    return true;
+  }
+
+  const size_t c_DefaultPageSize = 4 * 1024;
+
+  // This is needed when you want to allocate
+  // AlignedBuffer for use with file I/O classes
+  // Used for unbuffered file I/O when UseOSBuffer() returns false
+  virtual size_t GetRequiredBufferAlignment() const {
+    return c_DefaultPageSize;
+  }
+
   virtual Status Append(const Slice& data) = 0;
+
+  // Positioned write for unbuffered access default forward
+  // to simple append as most of the tests are buffered by default
+  virtual Status PositionedAppend(const Slice& /* data */, uint64_t /* offset */) {
+    return Status::NotSupported();
+  }
+
+  // Truncate is necessary to trim the file to the correct size
+  // before closing. It is not always possible to keep track of the file
+  // size due to whole pages writes. The behavior is undefined if called
+  // with other writes to follow.
+  virtual Status Truncate(uint64_t size) {
+    return Status::OK();
+  }
   virtual Status Close() = 0;
   virtual Status Flush() = 0;
   virtual Status Sync() = 0; // sync data
@@ -515,7 +570,7 @@ class WritableFile {
   // This asks the OS to initiate flushing the cached data to disk,
   // without waiting for completion.
   // Default implementation does nothing.
-  virtual Status RangeSync(off_t offset, off_t nbytes) { return Status::OK(); }
+  virtual Status RangeSync(uint64_t offset, uint64_t nbytes) { return Status::OK(); }
 
   // PrepareWrite performs any necessary preparation for a write
   // before the write actually occurs.  This allows for pre-allocation
@@ -535,8 +590,8 @@ class WritableFile {
     if (new_last_preallocated_block > last_preallocated_block_) {
       size_t num_spanned_blocks =
         new_last_preallocated_block - last_preallocated_block_;
-      Allocate(static_cast<off_t>(block_size * last_preallocated_block_),
-               static_cast<off_t>(block_size * num_spanned_blocks));
+      Allocate(block_size * last_preallocated_block_,
+               block_size * num_spanned_blocks);
       last_preallocated_block_ = new_last_preallocated_block;
     }
   }
@@ -545,7 +600,7 @@ class WritableFile {
   /*
    * Pre-allocate space for a file.
    */
-  virtual Status Allocate(off_t offset, off_t len) {
+  virtual Status Allocate(uint64_t offset, uint64_t len) {
     return Status::OK();
   }
 
@@ -713,6 +768,12 @@ class EnvWrapper : public Env {
                          const EnvOptions& options) override {
     return target_->NewWritableFile(f, r, options);
   }
+  Status ReuseWritableFile(const std::string& fname,
+                           const std::string& old_fname,
+                           unique_ptr<WritableFile>* r,
+                           const EnvOptions& options) override {
+    return target_->ReuseWritableFile(fname, old_fname, r, options);
+  }
   virtual Status NewDirectory(const std::string& name,
                               unique_ptr<Directory>* result) override {
     return target_->NewDirectory(name, result);
@@ -839,6 +900,10 @@ class WritableFileWrapper : public WritableFile {
   explicit WritableFileWrapper(WritableFile* t) : target_(t) { }
 
   Status Append(const Slice& data) override { return target_->Append(data); }
+  Status PositionedAppend(const Slice& data, uint64_t offset) override {
+    return target_->PositionedAppend(data, offset);
+  }
+  Status Truncate(uint64_t size) override { return target_->Truncate(size); }
   Status Close() override { return target_->Close(); }
   Status Flush() override { return target_->Flush(); }
   Status Sync() override { return target_->Sync(); }
@@ -861,10 +926,10 @@ class WritableFileWrapper : public WritableFile {
   }
 
  protected:
-  Status Allocate(off_t offset, off_t len) override {
+  Status Allocate(uint64_t offset, uint64_t len) override {
     return target_->Allocate(offset, len);
   }
-  Status RangeSync(off_t offset, off_t nbytes) override {
+  Status RangeSync(uint64_t offset, uint64_t nbytes) override {
     return target_->RangeSync(offset, nbytes);
   }
 

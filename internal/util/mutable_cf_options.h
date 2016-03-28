@@ -25,11 +25,13 @@ struct MutableCFOptions {
         inplace_update_num_locks(options.inplace_update_num_locks),
         disable_auto_compactions(options.disable_auto_compactions),
         soft_rate_limit(options.soft_rate_limit),
-        hard_rate_limit(options.hard_rate_limit),
+        hard_pending_compaction_bytes_limit(
+            options.hard_pending_compaction_bytes_limit),
         level0_file_num_compaction_trigger(
             options.level0_file_num_compaction_trigger),
         level0_slowdown_writes_trigger(options.level0_slowdown_writes_trigger),
         level0_stop_writes_trigger(options.level0_stop_writes_trigger),
+        compaction_pri(options.compaction_pri),
         max_grandparent_overlap_factor(options.max_grandparent_overlap_factor),
         expanded_compaction_factor(options.expanded_compaction_factor),
         source_compaction_factor(options.source_compaction_factor),
@@ -61,10 +63,11 @@ struct MutableCFOptions {
         inplace_update_num_locks(0),
         disable_auto_compactions(false),
         soft_rate_limit(0),
-        hard_rate_limit(0),
+        hard_pending_compaction_bytes_limit(0),
         level0_file_num_compaction_trigger(0),
         level0_slowdown_writes_trigger(0),
         level0_stop_writes_trigger(0),
+        compaction_pri(kCompactionPriByCompensatedSize),
         max_grandparent_overlap_factor(0),
         expanded_compaction_factor(0),
         source_compaction_factor(0),
@@ -112,10 +115,11 @@ struct MutableCFOptions {
   // Compaction related options
   bool disable_auto_compactions;
   double soft_rate_limit;
-  double hard_rate_limit;
+  uint64_t hard_pending_compaction_bytes_limit;
   int level0_file_num_compaction_trigger;
   int level0_slowdown_writes_trigger;
   int level0_stop_writes_trigger;
+  CompactionPri compaction_pri;
   int max_grandparent_overlap_factor;
   int expanded_compaction_factor;
   int source_compaction_factor;

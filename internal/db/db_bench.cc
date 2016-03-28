@@ -110,7 +110,8 @@ DEFINE_string(benchmarks,
               "uncompress,"
               "acquireload,"
               "fillseekseq,"
-              "randomtransaction",
+              "randomtransaction,"
+              "randomreplacekeys",
 
               "Comma-separated list of operations to run in the specified"
               " order. Available benchmarks:\n"
@@ -161,6 +162,8 @@ DEFINE_string(benchmarks,
               "them by seeking to each key\n"
               "\trandomtransaction     -- execute N random transactions and "
               "verify correctness\n"
+              "\trandomreplacekeys     -- randomly replaces N keys by deleting "
+              "the old version and putting the new version\n\n"
               "Meta operations:\n"
               "\tcompact     -- Compact the entire DB\n"
               "\tstats       -- Print DB stats\n"
@@ -311,6 +314,10 @@ static rocksdb::CompactionStyle FLAGS_compaction_style_e;
 DEFINE_int32(compaction_style, (int32_t) rocksdb::Options().compaction_style,
              "style of compaction: level-based vs universal");
 
+static rocksdb::CompactionPri FLAGS_compaction_pri_e;
+DEFINE_int32(compaction_pri, (int32_t)rocksdb::Options().compaction_pri,
+             "priority of files to compaction: by size or by data age");
+
 DEFINE_int32(universal_size_ratio, 0,
              "Percentage flexibility while comparing file size"
              " (for universal compaction only).");
@@ -357,10 +364,23 @@ DEFINE_int32(open_files, rocksdb::Options().max_open_files,
              "Maximum number of files to keep open at the same time"
              " (use default if == 0)");
 
+DEFINE_int32(file_opening_threads, rocksdb::Options().max_file_opening_threads,
+             "If open_files is set to -1, this option set the number of "
+             "threads that will be used to open files during DB::Open()");
+
 DEFINE_int32(new_table_reader_for_compaction_inputs, true,
              "If true, uses a separate file handle for compaction inputs");
 
 DEFINE_int32(compaction_readahead_size, 0, "Compaction readahead size");
+
+DEFINE_int32(random_access_max_buffer_size, 1024 * 1024,
+             "Maximum windows randomaccess buffer size");
+
+DEFINE_int32(writable_file_max_buffer_size, 1024 * 1024,
+             "Maximum write buffer for Writable File");
+
+DEFINE_int32(skip_table_builder_flush, false, "Skip flushing block in "
+             "table builder ");
 
 DEFINE_int32(bloom_bits, -1, "Bloom filter bits per key. Negative means"
              " use default settings.");
@@ -475,6 +495,7 @@ DEFINE_int32(deletepercent, 2, "Percentage of deletes out of reads/writes/"
 DEFINE_uint64(delete_obsolete_files_period_micros, 0,
               "Ignored. Left here for backward compatibility");
 
+#ifndef ROCKSDB_LITE
 DEFINE_bool(optimistic_transaction_db, false,
             "Open a OptimisticTransactionDB instance. "
             "Required for randomtransaction benchmark.");
@@ -498,6 +519,7 @@ DEFINE_int32(transaction_sleep, 0,
 DEFINE_uint64(transaction_lock_timeout, 100,
               "If using a transaction_db, specifies the lock wait timeout in"
               " milliseconds before failing a transaction waiting on a lock");
+#endif  // ROCKSDB_LITE
 
 DEFINE_bool(compaction_measure_io_stats, false,
             "Measure times spents on I/Os while in compactions. ");
@@ -611,9 +633,10 @@ static bool ValidateRateLimit(const char* flagname, double value) {
 }
 DEFINE_double(soft_rate_limit, 0.0, "");
 
-DEFINE_double(hard_rate_limit, 0.0, "When not equal to 0 this make threads "
-              "sleep at each stats reporting interval until the compaction"
-              " score for all levels is less than or equal to this value.");
+DEFINE_double(hard_rate_limit, 0.0, "DEPRECATED");
+
+DEFINE_uint64(hard_pending_compaction_bytes_limit, 128ull * 1024 * 1024 * 1024,
+              "Stop writes if pending compaction bytes exceed this number");
 
 DEFINE_uint64(delayed_write_rate, 2097152u,
               "Limited bytes allowed to DB when soft_rate_limit or "
@@ -633,7 +656,9 @@ DEFINE_int32(max_grandparent_overlap_factor, 10, "Control maximum bytes of "
              "overlaps in grandparent (i.e., level+2) before we stop building a"
              " single file in a level->level+1 compaction.");
 
+#ifndef ROCKSDB_LITE
 DEFINE_bool(readonly, false, "Run read only benchmarks.");
+#endif  // ROCKSDB_LITE
 
 DEFINE_bool(disable_auto_compactions, false, "Do not auto trigger compactions");
 
@@ -686,6 +711,13 @@ DEFINE_uint64(wal_bytes_per_sync,  rocksdb::Options().wal_bytes_per_sync,
 
 DEFINE_bool(filter_deletes, false, " On true, deletes use bloom-filter and drop"
             " the delete if key not present");
+
+DEFINE_bool(use_single_deletes, true,
+            "Use single deletes (used in RandomReplaceKeys only).");
+
+DEFINE_double(stddev, 2000.0,
+              "Standard deviation of normal distribution used for picking keys"
+              " (used in RandomReplaceKeys only).");
 
 DEFINE_int32(max_successive_merges, 0, "Maximum number of successive merge"
              " operations on a key in the memtable");
@@ -898,6 +930,7 @@ class ReportFileOpEnv : public EnvWrapper {
         return rv;
       }
 
+      Status Truncate(uint64_t size) override { return target_->Truncate(size); }
       Status Close() override { return target_->Close(); }
       Status Flush() override { return target_->Flush(); }
       Status Sync() override { return target_->Sync(); }
@@ -963,7 +996,9 @@ static void AppendWithSpace(std::string* str, Slice msg) {
 struct DBWithColumnFamilies {
   std::vector<ColumnFamilyHandle*> cfh;
   DB* db;
+#ifndef ROCKSDB_LITE
   OptimisticTransactionDB* opt_txn_db;
+#endif  // ROCKSDB_LITE
   std::atomic<size_t> num_created;  // Need to be updated after all the
                                     // new entries in cfh are set.
   size_t num_hot;  // Number of column families to be queried at each moment.
@@ -971,7 +1006,12 @@ struct DBWithColumnFamilies {
                    // Column families will be created and used to be queried.
   port::Mutex create_cf_mutex;  // Only one thread can execute CreateNewCf()
 
-  DBWithColumnFamilies() : db(nullptr), opt_txn_db(nullptr) {
+  DBWithColumnFamilies()
+      : db(nullptr)
+#ifndef ROCKSDB_LITE
+        , opt_txn_db(nullptr)
+#endif  // ROCKSDB_LITE
+  {
     cfh.clear();
     num_created = 0;
     num_hot = 0;
@@ -980,7 +1020,9 @@ struct DBWithColumnFamilies {
   DBWithColumnFamilies(const DBWithColumnFamilies& other)
       : cfh(other.cfh),
         db(other.db),
+#ifndef ROCKSDB_LITE
         opt_txn_db(other.opt_txn_db),
+#endif  // ROCKSDB_LITE
         num_created(other.num_created.load()),
         num_hot(other.num_hot) {}
 
@@ -988,13 +1030,18 @@ struct DBWithColumnFamilies {
     std::for_each(cfh.begin(), cfh.end(),
                   [](ColumnFamilyHandle* cfhi) { delete cfhi; });
     cfh.clear();
+#ifndef ROCKSDB_LITE
     if (opt_txn_db) {
       delete opt_txn_db;
       opt_txn_db = nullptr;
     } else {
       delete db;
+      db = nullptr;
     }
+#else
+    delete db;
     db = nullptr;
+#endif  // ROCKSDB_LITE
   }
 
   ColumnFamilyHandle* GetCfh(int64_t rand_num) {
@@ -1920,9 +1967,14 @@ class Benchmark {
         method = &Benchmark::Compress;
       } else if (name == "uncompress") {
         method = &Benchmark::Uncompress;
+#ifndef ROCKSDB_LITE
       } else if (name == "randomtransaction") {
         method = &Benchmark::RandomTransaction;
         post_process_method = &Benchmark::RandomTransactionVerify;
+#endif  // ROCKSDB_LITE
+      } else if (name == "randomreplacekeys") {
+        fresh_db = true;
+        method = &Benchmark::RandomReplaceKeys;
       } else if (name == "stats") {
         PrintStats("rocksdb.stats");
       } else if (name == "levelstats") {
@@ -2233,6 +2285,7 @@ class Benchmark {
     options.max_subcompactions = static_cast<uint32_t>(FLAGS_subcompactions);
     options.max_background_flushes = FLAGS_max_background_flushes;
     options.compaction_style = FLAGS_compaction_style_e;
+    options.compaction_pri = FLAGS_compaction_pri_e;
     if (FLAGS_prefix_size != 0) {
       options.prefix_extractor.reset(
           NewFixedPrefixTransform(FLAGS_prefix_size));
@@ -2247,9 +2300,12 @@ class Benchmark {
     options.memtable_prefix_bloom_bits = FLAGS_memtable_bloom_bits;
     options.bloom_locality = FLAGS_bloom_locality;
     options.max_open_files = FLAGS_open_files;
+    options.max_file_opening_threads = FLAGS_file_opening_threads;
     options.new_table_reader_for_compaction_inputs =
         FLAGS_new_table_reader_for_compaction_inputs;
     options.compaction_readahead_size = FLAGS_compaction_readahead_size;
+    options.random_access_max_buffer_size = FLAGS_random_access_max_buffer_size;
+    options.writable_file_max_buffer_size = FLAGS_writable_file_max_buffer_size;
     options.statistics = dbstats;
     if (FLAGS_enable_io_prio) {
       FLAGS_env->LowerThreadPoolIOPriority(Env::LOW);
@@ -2392,6 +2448,8 @@ class Benchmark {
       block_based_options.block_size = FLAGS_block_size;
       block_based_options.block_restart_interval = FLAGS_block_restart_interval;
       block_based_options.filter_policy = filter_policy_;
+      block_based_options.skip_table_builder_flush =
+          FLAGS_skip_table_builder_flush;
       block_based_options.format_version = 2;
       options.table_factory.reset(
           NewBlockBasedTableFactory(block_based_options));
@@ -2430,6 +2488,8 @@ class Benchmark {
     }
     options.soft_rate_limit = FLAGS_soft_rate_limit;
     options.hard_rate_limit = FLAGS_hard_rate_limit;
+    options.hard_pending_compaction_bytes_limit =
+        FLAGS_hard_pending_compaction_bytes_limit;
     options.delayed_write_rate = FLAGS_delayed_write_rate;
     options.rate_limit_delay_max_milliseconds =
       FLAGS_rate_limit_delay_max_milliseconds;
@@ -2491,10 +2551,12 @@ class Benchmark {
           NewGenericRateLimiter(FLAGS_rate_limiter_bytes_per_sec));
     }
 
+#ifndef ROCKSDB_LITE
     if (FLAGS_readonly && FLAGS_transaction_db) {
       fprintf(stderr, "Cannot use readonly flag with transaction_db\n");
       exit(1);
     }
+#endif  // ROCKSDB_LITE
 
     if (FLAGS_num_multi_db <= 1) {
       OpenDb(options, FLAGS_db, &db_);
@@ -2527,6 +2589,7 @@ class Benchmark {
         column_families.push_back(ColumnFamilyDescriptor(
               ColumnFamilyName(i), ColumnFamilyOptions(options)));
       }
+#ifndef ROCKSDB_LITE
       if (FLAGS_readonly) {
         s = DB::OpenForReadOnly(options, db_name, column_families,
             &db->cfh, &db->db);
@@ -2547,9 +2610,13 @@ class Benchmark {
       } else {
         s = DB::Open(options, db_name, column_families, &db->cfh, &db->db);
       }
+#else
+      s = DB::Open(options, db_name, column_families, &db->cfh, &db->db);
+#endif  // ROCKSDB_LITE
       db->cfh.resize(FLAGS_num_column_families);
       db->num_created = num_hot;
       db->num_hot = num_hot;
+#ifndef ROCKSDB_LITE
     } else if (FLAGS_readonly) {
       s = DB::OpenForReadOnly(options, db_name, &db->db);
     } else if (FLAGS_optimistic_transaction_db) {
@@ -2564,7 +2631,7 @@ class Benchmark {
       if (s.ok()) {
         db->db = ptr;
       }
-
+#endif  // ROCKSDB_LITE
     } else {
       s = DB::Open(options, db_name, &db->db);
     }
@@ -3609,6 +3676,7 @@ class Benchmark {
     }
   }
 
+#ifndef ROCKSDB_LITE
   // This benchmark stress tests Transactions.  For a given --duration (or
   // total number of --writes, a Transaction will perform a read-modify-write
   // to increment the value of a key in each of N(--transaction-sets) sets of
@@ -3841,6 +3909,67 @@ class Benchmark {
 
     fprintf(stdout, "RandomTransactionVerify Success!\n");
   }
+#endif  // ROCKSDB_LITE
+
+  // Writes and deletes random keys without overwriting keys.
+  //
+  // This benchmark is intended to partially replicate the behavior of MyRocks
+  // secondary indices: All data is stored in keys and updates happen by
+  // deleting the old version of the key and inserting the new version.
+  void RandomReplaceKeys(ThreadState* thread) {
+    std::unique_ptr<const char[]> key_guard;
+    Slice key = AllocateKey(&key_guard);
+    std::vector<uint32_t> counters(FLAGS_numdistinct, 0);
+    size_t max_counter = 50;
+    RandomGenerator gen;
+
+    Status s;
+    DB* db = SelectDB(thread);
+    for (int64_t i = 0; i < FLAGS_numdistinct; i++) {
+      GenerateKeyFromInt(i * max_counter, FLAGS_num, &key);
+      s = db->Put(write_options_, key, gen.Generate(value_size_));
+      if (!s.ok()) {
+        fprintf(stderr, "Operation failed: %s\n", s.ToString().c_str());
+        exit(1);
+      }
+    }
+
+    db->GetSnapshot();
+
+    std::default_random_engine generator;
+    std::normal_distribution<double> distribution(FLAGS_numdistinct / 2.0,
+                                                  FLAGS_stddev);
+    Duration duration(FLAGS_duration, FLAGS_num);
+    while (!duration.Done(1)) {
+      int64_t rnd_id = static_cast<int64_t>(distribution(generator));
+      int64_t key_id = std::max(std::min(FLAGS_numdistinct - 1, rnd_id),
+                                static_cast<int64_t>(0));
+      GenerateKeyFromInt(key_id * max_counter + counters[key_id], FLAGS_num,
+                         &key);
+      s = FLAGS_use_single_deletes ? db->SingleDelete(write_options_, key)
+                                   : db->Delete(write_options_, key);
+      if (s.ok()) {
+        counters[key_id] = (counters[key_id] + 1) % max_counter;
+        GenerateKeyFromInt(key_id * max_counter + counters[key_id], FLAGS_num,
+                           &key);
+        s = db->Put(write_options_, key, Slice());
+      }
+
+      if (!s.ok()) {
+        fprintf(stderr, "Operation failed: %s\n", s.ToString().c_str());
+        exit(1);
+      }
+
+      thread->stats.FinishedOps(nullptr, db, 1);
+    }
+
+    char msg[200];
+    snprintf(msg, sizeof(msg),
+             "use single deletes: %d, "
+             "standard deviation: %lf\n",
+             FLAGS_use_single_deletes, FLAGS_stddev);
+    thread->stats.AddMessage(msg);
+  }
 
   void Compact(ThreadState* thread) {
     DB* db = SelectDB(thread);
@@ -3880,6 +4009,7 @@ int main(int argc, char** argv) {
   if (FLAGS_statistics) {
     dbstats = rocksdb::CreateDBStatistics();
   }
+  FLAGS_compaction_pri_e = (rocksdb::CompactionPri)FLAGS_compaction_pri;
 
   std::vector<std::string> fanout = rocksdb::StringSplit(
       FLAGS_max_bytes_for_level_multiplier_additional, ',');

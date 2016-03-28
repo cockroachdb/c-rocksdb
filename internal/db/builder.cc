@@ -26,6 +26,7 @@
 #include "rocksdb/options.h"
 #include "rocksdb/table.h"
 #include "table/block_based_table_builder.h"
+#include "table/internal_iterator.h"
 #include "util/file_reader_writer.h"
 #include "util/iostats_context_imp.h"
 #include "util/stop_watch.h"
@@ -40,22 +41,25 @@ TableBuilder* NewTableBuilder(
     const InternalKeyComparator& internal_comparator,
     const std::vector<std::unique_ptr<IntTblPropCollectorFactory>>*
         int_tbl_prop_collector_factories,
-    WritableFileWriter* file, const CompressionType compression_type,
+    uint32_t column_family_id, WritableFileWriter* file,
+    const CompressionType compression_type,
     const CompressionOptions& compression_opts, const bool skip_filters) {
   return ioptions.table_factory->NewTableBuilder(
       TableBuilderOptions(ioptions, internal_comparator,
                           int_tbl_prop_collector_factories, compression_type,
                           compression_opts, skip_filters),
-      file);
+      column_family_id, file);
 }
 
 Status BuildTable(
     const std::string& dbname, Env* env, const ImmutableCFOptions& ioptions,
-    const EnvOptions& env_options, TableCache* table_cache, Iterator* iter,
-    FileMetaData* meta, const InternalKeyComparator& internal_comparator,
+    const EnvOptions& env_options, TableCache* table_cache,
+    InternalIterator* iter, FileMetaData* meta,
+    const InternalKeyComparator& internal_comparator,
     const std::vector<std::unique_ptr<IntTblPropCollectorFactory>>*
         int_tbl_prop_collector_factories,
-    std::vector<SequenceNumber> snapshots, const CompressionType compression,
+    uint32_t column_family_id, std::vector<SequenceNumber> snapshots,
+    const CompressionType compression,
     const CompressionOptions& compression_opts, bool paranoid_file_checks,
     InternalStats* internal_stats, const Env::IOPriority io_priority,
     TableProperties* table_properties) {
@@ -72,7 +76,7 @@ Status BuildTable(
     unique_ptr<WritableFileWriter> file_writer;
     {
       unique_ptr<WritableFile> file;
-      s = env->NewWritableFile(fname, &file, env_options);
+      s = NewWritableFile(env, fname, &file, env_options);
       if (!s.ok()) {
         return s;
       }
@@ -82,13 +86,14 @@ Status BuildTable(
 
       builder = NewTableBuilder(
           ioptions, internal_comparator, int_tbl_prop_collector_factories,
-          file_writer.get(), compression, compression_opts);
+          column_family_id, file_writer.get(), compression, compression_opts);
     }
 
-    MergeHelper merge(internal_comparator.user_comparator(),
-                      ioptions.merge_operator, ioptions.info_log,
+    MergeHelper merge(env, internal_comparator.user_comparator(),
+                      ioptions.merge_operator, nullptr, ioptions.info_log,
                       ioptions.min_partial_merge_operands,
-                      true /* internal key corruption is not ok */);
+                      true /* internal key corruption is not ok */,
+                      snapshots.empty() ? 0 : snapshots.back());
 
     CompactionIterator c_iter(iter, internal_comparator.user_comparator(),
                               &merge, kMaxSequenceNumber, &snapshots, env,
@@ -109,13 +114,15 @@ Status BuildTable(
     }
 
     // Finish and check for builder errors
+    bool empty = builder->NumEntries() == 0;
     s = c_iter.status();
-    if (s.ok()) {
-      s = builder->Finish();
-    } else {
+    if (!s.ok() || empty) {
       builder->Abandon();
+    } else {
+      s = builder->Finish();
     }
-    if (s.ok()) {
+
+    if (s.ok() && !empty) {
       meta->fd.file_size = builder->FileSize();
       meta->marked_for_compaction = builder->NeedCompact();
       assert(meta->fd.GetFileSize() > 0);
@@ -126,28 +133,27 @@ Status BuildTable(
     delete builder;
 
     // Finish and check for file errors
-    if (s.ok() && !ioptions.disable_data_sync) {
+    if (s.ok() && !empty && !ioptions.disable_data_sync) {
       StopWatch sw(env, ioptions.statistics, TABLE_SYNC_MICROS);
       file_writer->Sync(ioptions.use_fsync);
     }
-    if (s.ok()) {
+    if (s.ok() && !empty) {
       s = file_writer->Close();
     }
 
-    if (s.ok()) {
+    if (s.ok() && !empty) {
       // Verify that the table is usable
-      Iterator* it = table_cache->NewIterator(
+      std::unique_ptr<InternalIterator> it(table_cache->NewIterator(
           ReadOptions(), env_options, internal_comparator, meta->fd, nullptr,
           (internal_stats == nullptr) ? nullptr
                                       : internal_stats->GetFileReadHist(0),
-          false);
+          false));
       s = it->status();
       if (s.ok() && paranoid_file_checks) {
-        for (it->SeekToFirst(); it->Valid(); it->Next()) {}
+        for (it->SeekToFirst(); it->Valid(); it->Next()) {
+        }
         s = it->status();
       }
-
-      delete it;
     }
   }
 
@@ -156,9 +162,7 @@ Status BuildTable(
     s = iter->status();
   }
 
-  if (s.ok() && meta->fd.GetFileSize() > 0) {
-    // Keep it
-  } else {
+  if (!s.ok() || meta->fd.GetFileSize() == 0) {
     env->DeleteFile(fname);
   }
   return s;

@@ -73,6 +73,11 @@ class Slice {
     size_ -= n;
   }
 
+  void remove_suffix(size_t n) {
+    assert(n <= size());
+    size_ -= n;
+  }
+
   // Return a string that contains the copy of the referenced data.
   std::string ToString(bool hex = false) const;
 
@@ -87,6 +92,14 @@ class Slice {
     return ((size_ >= x.size_) &&
             (memcmp(data_, x.data_, x.size_) == 0));
   }
+
+  bool ends_with(const Slice& x) const {
+    return ((size_ >= x.size_) &&
+            (memcmp(data_ + size_ - x.size_, x.data_, x.size_) == 0));
+  }
+
+  // Compare two slices and returns the first byte where they differ
+  size_t difference_offset(const Slice& b) const;
 
  // private: make these public for rocksdbjni access
   const char* data_;
@@ -123,6 +136,15 @@ inline int Slice::compare(const Slice& b) const {
     else if (size_ > b.size_) r = +1;
   }
   return r;
+}
+
+inline size_t Slice::difference_offset(const Slice& b) const {
+  size_t off = 0;
+  const size_t len = (size_ < b.size_) ? size_ : b.size_;
+  for (; off < len; off++) {
+    if (data_[off] != b.data_[off]) break;
+  }
+  return off;
 }
 
 }  // namespace rocksdb

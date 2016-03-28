@@ -28,7 +28,8 @@ stl_wrappers::KVMap MakeMockFile(
   return stl_wrappers::KVMap(l, stl_wrappers::LessOfComparator(&icmp_));
 }
 
-Iterator* MockTableReader::NewIterator(const ReadOptions&, Arena* arena) {
+InternalIterator* MockTableReader::NewIterator(const ReadOptions&,
+                                               Arena* arena) {
   return new MockTableIterator(table_);
 }
 
@@ -56,8 +57,7 @@ std::shared_ptr<const TableProperties> MockTableReader::GetTableProperties()
 MockTableFactory::MockTableFactory() : next_id_(1) {}
 
 Status MockTableFactory::NewTableReader(
-    const ImmutableCFOptions& ioptions, const EnvOptions& env_options,
-    const InternalKeyComparator& internal_key,
+    const TableReaderOptions& table_reader_options,
     unique_ptr<RandomAccessFileReader>&& file, uint64_t file_size,
     unique_ptr<TableReader>* table_reader) const {
   uint32_t id = GetIDFromFile(file.get());
@@ -75,9 +75,9 @@ Status MockTableFactory::NewTableReader(
 }
 
 TableBuilder* MockTableFactory::NewTableBuilder(
-    const TableBuilderOptions& table_builder_options,
+    const TableBuilderOptions& table_builder_options, uint32_t column_family_id,
     WritableFileWriter* file) const {
-  uint32_t id = GetAndWriteNextID(file->writable_file());
+  uint32_t id = GetAndWriteNextID(file);
 
   return new MockTableBuilder(id, &file_system_);
 }
@@ -90,12 +90,14 @@ Status MockTableFactory::CreateMockTable(Env* env, const std::string& fname,
     return s;
   }
 
-  uint32_t id = GetAndWriteNextID(file.get());
+  WritableFileWriter file_writer(std::move(file), EnvOptions());
+
+  uint32_t id = GetAndWriteNextID(&file_writer);
   file_system_.files.insert({id, std::move(file_contents)});
   return Status::OK();
 }
 
-uint32_t MockTableFactory::GetAndWriteNextID(WritableFile* file) const {
+uint32_t MockTableFactory::GetAndWriteNextID(WritableFileWriter* file) const {
   uint32_t next_id = next_id_.fetch_add(1);
   char buf[4];
   EncodeFixed32(buf, next_id);

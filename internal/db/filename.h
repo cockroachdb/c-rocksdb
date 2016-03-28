@@ -36,7 +36,8 @@ enum FileType {
   kTempFile,
   kInfoLogFile,  // Either the current one, or an old one
   kMetaDatabase,
-  kIdentityFile
+  kIdentityFile,
+  kOptionsFile
 };
 
 // Return the name of the log file with the specified number
@@ -54,6 +55,10 @@ extern std::string ArchivedLogFileName(const std::string& dbname,
                                        uint64_t num);
 
 extern std::string MakeTableFileName(const std::string& name, uint64_t number);
+
+// Return the name of sstable with LevelDB suffix
+// created from RocksDB sstable suffixed name
+extern std::string Rocks2LevelTableFileName(const std::string& fullname);
 
 // the reverse function of MakeTableFileName
 // TODO(yhchiang): could merge this function with ParseFileName()
@@ -102,11 +107,26 @@ struct InfoLogPrefix {
 
 // Return the name of the info log file for "dbname".
 extern std::string InfoLogFileName(const std::string& dbname,
-    const std::string& db_path="", const std::string& log_dir="");
+                                   const std::string& db_path = "",
+                                   const std::string& log_dir = "");
 
 // Return the name of the old info log file for "dbname".
 extern std::string OldInfoLogFileName(const std::string& dbname, uint64_t ts,
-    const std::string& db_path="", const std::string& log_dir="");
+                                      const std::string& db_path = "",
+                                      const std::string& log_dir = "");
+
+static const std::string kOptionsFileNamePrefix = "OPTIONS-";
+static const std::string kTempFileNameSuffix = "dbtmp";
+
+// Return a options file name given the "dbname" and file number.
+// Format:  OPTIONS-[number].dbtmp
+extern std::string OptionsFileName(const std::string& dbname,
+                                   uint64_t file_num);
+
+// Return a temp options file name given the "dbname" and file number.
+// Format:  OPTIONS-[number]
+extern std::string TempOptionsFileName(const std::string& dbname,
+                                       uint64_t file_num);
 
 // Return the name to use for a metadatabase. The result will be prefixed with
 // "dbname".

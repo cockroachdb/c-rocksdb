@@ -94,7 +94,7 @@ class CompactionPicker {
       const CompactionOptions& compact_options,
       const std::vector<CompactionInputFiles>& input_files, int output_level,
       VersionStorageInfo* vstorage, const MutableCFOptions& mutable_cf_options,
-      uint32_t output_path_id) const;
+      uint32_t output_path_id);
 
   // Converts a set of compaction input file numbers into
   // a list of CompactionInputFiles.
@@ -109,6 +109,11 @@ class CompactionPicker {
   // in the input. Returns true if the input files are non
   // overlapping.
   bool IsInputNonOverlapping(Compaction* c);
+
+  // Is there currently a compaction involving level 0 taking place
+  bool IsLevel0CompactionInProgress() const {
+    return !level0_compactions_in_progress_.empty();
+  }
 
  protected:
   int NumberLevels() const { return ioptions_.num_levels; }

@@ -35,7 +35,20 @@ else ()
 endif ()
 
 if (${USE_GFLAGS} EQUAL 1)
-  message("GFLAGS library is enabled")
+  message(STATUS "GFLAGS library is enabled")
+  
+  if(DEFINED ENV{GFLAGS_INCLUDE})
+    set(GFLAGS_INCLUDE $ENV{GFLAGS_INCLUDE})
+  endif()
+  
+  if(DEFINED ENV{GFLAGS_LIB_DEBUG})
+    set(GFLAGS_LIB_DEBUG $ENV{GFLAGS_LIB_DEBUG})
+  endif()
+
+  if(DEFINED ENV{GFLAGS_LIB_RELEASE})
+    set(GFLAGS_LIB_RELEASE $ENV{GFLAGS_LIB_RELEASE})
+  endif()
+  
   set(GFLAGS_CXX_FLAGS -DGFLAGS=gflags)
   set(GFLAGS_LIBS debug ${GFLAGS_LIB_DEBUG} optimized ${GFLAGS_LIB_RELEASE})
 
@@ -43,7 +56,7 @@ if (${USE_GFLAGS} EQUAL 1)
   include_directories(${GFLAGS_INCLUDE})
   set (THIRDPARTY_LIBS ${THIRDPARTY_LIBS} ${GFLAGS_LIBS})
 else ()
-  message("GFLAGS library is disabled")
+  message(STATUS "GFLAGS library is disabled")
 endif ()
 
 # ================================================== SNAPPY ==================================================
@@ -65,7 +78,20 @@ else ()
 endif ()
 
 if (${USE_SNAPPY} EQUAL 1)
-  message("SNAPPY library is enabled")
+  message(STATUS "SNAPPY library is enabled")
+  
+  if(DEFINED ENV{SNAPPY_INCLUDE})
+    set(SNAPPY_INCLUDE $ENV{SNAPPY_INCLUDE})
+  endif()
+  
+  if(DEFINED ENV{SNAPPY_LIB_DEBUG})
+    set(SNAPPY_LIB_DEBUG $ENV{SNAPPY_LIB_DEBUG})
+  endif()
+
+  if(DEFINED ENV{SNAPPY_LIB_RELEASE})
+    set(SNAPPY_LIB_RELEASE $ENV{SNAPPY_LIB_RELEASE})
+  endif()
+  
   set(SNAPPY_CXX_FLAGS -DSNAPPY)
   set(SNAPPY_LIBS debug ${SNAPPY_LIB_DEBUG} optimized ${SNAPPY_LIB_RELEASE})
 
@@ -73,7 +99,7 @@ if (${USE_SNAPPY} EQUAL 1)
   include_directories(${SNAPPY_INCLUDE})
   set (THIRDPARTY_LIBS ${THIRDPARTY_LIBS} ${SNAPPY_LIBS})
 else ()
-  message("SNAPPY library is disabled")
+  message(STATUS "SNAPPY library is disabled")
 endif ()
 
 # ================================================== LZ4 ==================================================
@@ -95,7 +121,20 @@ else ()
 endif ()
 
 if (${USE_LZ4} EQUAL 1)
-  message("LZ4 library is enabled")
+  message(STATUS "LZ4 library is enabled")
+  
+  if(DEFINED ENV{LZ4_INCLUDE})
+    set(LZ4_INCLUDE $ENV{LZ4_INCLUDE})
+  endif()
+  
+  if(DEFINED ENV{LZ4_LIB_DEBUG})
+    set(LZ4_LIB_DEBUG $ENV{LZ4_LIB_DEBUG})
+  endif()
+
+  if(DEFINED ENV{LZ4_LIB_RELEASE})
+    set(LZ4_LIB_RELEASE $ENV{LZ4_LIB_RELEASE})
+  endif()
+  
   set(LZ4_CXX_FLAGS -DLZ4)
   set(LZ4_LIBS debug ${LZ4_LIB_DEBUG} optimized ${LZ4_LIB_RELEASE})
 
@@ -103,7 +142,7 @@ if (${USE_LZ4} EQUAL 1)
   include_directories(${LZ4_INCLUDE})
   set (THIRDPARTY_LIBS ${THIRDPARTY_LIBS} ${LZ4_LIBS})
 else ()
-  message("LZ4 library is disabled")
+  message(STATUS "LZ4 library is disabled")
 endif ()
 
 # ================================================== ZLIB ==================================================
@@ -125,7 +164,20 @@ else ()
 endif ()
 
 if (${USE_ZLIB} EQUAL 1)
-  message("ZLIB library is enabled")
+  message(STATUS "ZLIB library is enabled")
+
+  if(DEFINED ENV{ZLIB_INCLUDE})
+    set(ZLIB_INCLUDE $ENV{ZLIB_INCLUDE})
+  endif()
+  
+  if(DEFINED ENV{ZLIB_LIB_DEBUG})
+    set(ZLIB_LIB_DEBUG $ENV{ZLIB_LIB_DEBUG})
+  endif()
+
+  if(DEFINED ENV{ZLIB_LIB_RELEASE})
+    set(ZLIB_LIB_RELEASE $ENV{ZLIB_LIB_RELEASE})
+  endif()
+  
   set(ZLIB_CXX_FLAGS -DZLIB)
   set(ZLIB_LIBS debug ${ZLIB_LIB_DEBUG} optimized ${ZLIB_LIB_RELEASE})
 
@@ -133,7 +185,7 @@ if (${USE_ZLIB} EQUAL 1)
   include_directories(${ZLIB_INCLUDE})
   set (THIRDPARTY_LIBS ${THIRDPARTY_LIBS} ${ZLIB_LIBS})
 else ()
-  message("ZLIB library is disabled")
+  message(STATUS "ZLIB library is disabled")
 endif ()
 
 #
@@ -155,8 +207,21 @@ else ()
 endif ()
 
 if (${USE_JEMALLOC} EQUAL 1)
-  message("JEMALLOC library is enabled")
+  message(STATUS "JEMALLOC library is enabled")
   set(JEMALLOC_CXX_FLAGS -DJEMALLOC)
+  
+  if(DEFINED ENV{JEMALLOC_INCLUDE})
+    set(JEMALLOC_INCLUDE $ENV{JEMALLOC_INCLUDE})
+  endif()
+  
+  if(DEFINED ENV{JEMALLOC_LIB_DEBUG})
+    set(JEMALLOC_LIB_DEBUG $ENV{JEMALLOC_LIB_DEBUG})
+  endif()
+
+  if(DEFINED ENV{JEMALLOC_LIB_RELEASE})
+    set(JEMALLOC_LIB_RELEASE $ENV{JEMALLOC_LIB_RELEASE})
+  endif()
+
   set(JEMALLOC_LIBS debug ${JEMALLOC_LIB_DEBUG} optimized ${JEMALLOC_LIB_RELEASE})
 
   add_definitions(${JEMALLOC_CXX_FLAGS})
@@ -165,5 +230,5 @@ if (${USE_JEMALLOC} EQUAL 1)
   set (ARTIFACT_SUFFIX "_je")
 else ()
   set (ARTIFACT_SUFFIX "")
-  message("JEMALLOC library is disabled")
+  message(STATUS "JEMALLOC library is disabled")
 endif ()

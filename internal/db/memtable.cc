@@ -21,6 +21,7 @@
 #include "rocksdb/iterator.h"
 #include "rocksdb/merge_operator.h"
 #include "rocksdb/slice_transform.h"
+#include "table/internal_iterator.h"
 #include "table/merger.h"
 #include "util/arena.h"
 #include "util/coding.h"
@@ -202,7 +203,7 @@ const char* EncodeKey(std::string* scratch, const Slice& target) {
   return scratch->data();
 }
 
-class MemTableIterator: public Iterator {
+class MemTableIterator : public InternalIterator {
  public:
   MemTableIterator(
       const MemTable& mem, const ReadOptions& read_options, Arena* arena)
@@ -230,10 +231,15 @@ class MemTableIterator: public Iterator {
   virtual void Seek(const Slice& k) override {
     PERF_TIMER_GUARD(seek_on_memtable_time);
     PERF_COUNTER_ADD(seek_on_memtable_count, 1);
-    if (bloom_ != nullptr &&
-        !bloom_->MayContain(prefix_extractor_->Transform(ExtractUserKey(k)))) {
-      valid_ = false;
-      return;
+    if (bloom_ != nullptr) {
+      if (!bloom_->MayContain(
+              prefix_extractor_->Transform(ExtractUserKey(k)))) {
+        PERF_COUNTER_ADD(bloom_memtable_miss_count, 1);
+        valid_ = false;
+        return;
+      } else {
+        PERF_COUNTER_ADD(bloom_memtable_hit_count, 1);
+      }
     }
     iter_->Seek(k, nullptr);
     valid_ = iter_->Valid();
@@ -280,7 +286,8 @@ class MemTableIterator: public Iterator {
   void operator=(const MemTableIterator&);
 };
 
-Iterator* MemTable::NewIterator(const ReadOptions& read_options, Arena* arena) {
+InternalIterator* MemTable::NewIterator(const ReadOptions& read_options,
+                                        Arena* arena) {
   assert(arena != nullptr);
   auto mem = arena->AllocateAligned(sizeof(MemTableIterator));
   return new (mem) MemTableIterator(*this, read_options, arena);
@@ -444,9 +451,10 @@ static bool SaveValue(void* arg, const char* entry) {
         *(s->found_final_value) = true;
         return false;
       }
-      case kTypeDeletion: {
+      case kTypeDeletion:
+      case kTypeSingleDeletion: {
         if (*(s->merge_in_progress)) {
-          assert(merge_operator);
+          assert(merge_operator != nullptr);
           *(s->status) = Status::OK();
           bool merge_success = false;
           {
@@ -507,12 +515,18 @@ bool MemTable::Get(const LookupKey& key, std::string* value, Status* s,
   Slice user_key = key.user_key();
   bool found_final_value = false;
   bool merge_in_progress = s->IsMergeInProgress();
-
-  if (prefix_bloom_ &&
-      !prefix_bloom_->MayContain(prefix_extractor_->Transform(user_key))) {
+  bool const may_contain =
+      nullptr == prefix_bloom_
+          ? false
+          : prefix_bloom_->MayContain(prefix_extractor_->Transform(user_key));
+  if (prefix_bloom_ && !may_contain) {
     // iter is null if prefix bloom says the key does not exist
+    PERF_COUNTER_ADD(bloom_memtable_miss_count, 1);
     *seq = kMaxSequenceNumber;
   } else {
+    if (prefix_bloom_) {
+      PERF_COUNTER_ADD(bloom_memtable_hit_count, 1);
+    }
     Saver saver;
     saver.status = s;
     saver.found_final_value = &found_final_value;

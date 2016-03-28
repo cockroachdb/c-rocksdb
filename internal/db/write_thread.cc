@@ -4,6 +4,7 @@
 //  of patent rights can be found in the PATENTS file in the same directory.
 
 #include "db/write_thread.h"
+#include "util/sync_point.h"
 
 namespace rocksdb {
 
@@ -120,12 +121,13 @@ size_t WriteThread::EnterAsBatchGroupLeader(
       break;
     }
 
-    size += WriteBatchInternal::ByteSize(w->batch);
-    if (size > max_size) {
+    auto batch_size = WriteBatchInternal::ByteSize(w->batch);
+    if (size + batch_size > max_size) {
       // Do not make batch too big
       break;
     }
 
+    size += batch_size;
     write_batch_group->push_back(w->batch);
     w->in_batch_group = true;
     *last_writer = w;
@@ -187,6 +189,7 @@ void WriteThread::EnterUnbatched(Writer* w, InstrumentedMutex* mu) {
   LinkOne(w, &wait_needed);
   if (wait_needed) {
     mu->Unlock();
+    TEST_SYNC_POINT("WriteThread::EnterUnbatched:Wait");
     Await(w);
     mu->Lock();
   }

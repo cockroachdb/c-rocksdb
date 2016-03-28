@@ -255,16 +255,30 @@ Compaction* CompactionPicker::FormCompaction(
     const CompactionOptions& compact_options,
     const std::vector<CompactionInputFiles>& input_files, int output_level,
     VersionStorageInfo* vstorage, const MutableCFOptions& mutable_cf_options,
-    uint32_t output_path_id) const {
+    uint32_t output_path_id) {
   uint64_t max_grandparent_overlap_bytes =
       output_level + 1 < vstorage->num_levels() ?
           mutable_cf_options.MaxGrandParentOverlapBytes(output_level + 1) :
           std::numeric_limits<uint64_t>::max();
   assert(input_files.size());
-  return new Compaction(
+
+  // TODO(rven ): we might be able to run concurrent level 0 compaction
+  // if the key ranges of the two compactions do not overlap, but for now
+  // we do not allow it.
+  if ((input_files[0].level == 0) && !level0_compactions_in_progress_.empty()) {
+    return nullptr;
+  }
+  auto c = new Compaction(
       vstorage, mutable_cf_options, input_files, output_level,
       compact_options.output_file_size_limit, max_grandparent_overlap_bytes,
       output_path_id, compact_options.compression, /* grandparents */ {}, true);
+
+  // If it's level 0 compaction, make sure we don't execute any other level 0
+  // compactions in parallel
+  if ((c != nullptr) && (input_files[0].level == 0)) {
+    level0_compactions_in_progress_.insert(c);
+  }
+  return c;
 }
 
 Status CompactionPicker::GetCompactionInputsFromFileNumbers(
@@ -1028,7 +1042,7 @@ bool LevelCompactionPicker::PickCompactionBySize(VersionStorageInfo* vstorage,
 
   // Pick the largest file in this level that is not already
   // being compacted
-  const std::vector<int>& file_size = vstorage->FilesBySize(level);
+  const std::vector<int>& file_size = vstorage->FilesByCompactionPri(level);
   const std::vector<FileMetaData*>& level_files = vstorage->LevelFiles(level);
 
   // record the first file that is not yet compacted
@@ -1038,11 +1052,6 @@ bool LevelCompactionPicker::PickCompactionBySize(VersionStorageInfo* vstorage,
        i < file_size.size(); i++) {
     int index = file_size[i];
     auto* f = level_files[index];
-
-    assert((i == file_size.size() - 1) ||
-           (i >= VersionStorageInfo::kNumberFilesToSort - 1) ||
-           (f->compensated_file_size >=
-            level_files[file_size[i + 1]]->compensated_file_size));
 
     // do not pick a file to compact if it is being compacted
     // from n-1 level.
@@ -1239,8 +1248,9 @@ Compaction* UniversalCompactionPicker::PickCompaction(
   std::vector<SortedRun> sorted_runs =
       CalculateSortedRuns(*vstorage, ioptions_);
 
-  if (sorted_runs.size() <
-      (unsigned int)mutable_cf_options.level0_file_num_compaction_trigger) {
+  if (sorted_runs.size() == 0 ||
+      sorted_runs.size() <
+          (unsigned int)mutable_cf_options.level0_file_num_compaction_trigger) {
     LogToBuffer(log_buffer, "[%s] Universal: nothing to do\n", cf_name.c_str());
     return nullptr;
   }
@@ -1322,7 +1332,13 @@ Compaction* UniversalCompactionPicker::PickCompaction(
                               &largest_seqno);
       if (is_first) {
         is_first = false;
-      } else {
+      } else if (prev_smallest_seqno > 0) {
+        // A level is considered as the bottommost level if there are
+        // no files in higher levels or if files in higher levels do
+        // not overlap with the files being compacted. Sequence numbers
+        // of files in bottommost level can be set to 0 to help
+        // compression. As a result, the following assert may not hold
+        // if the prev_smallest_seqno is 0.
         assert(prev_smallest_seqno > largest_seqno);
       }
       prev_smallest_seqno = smallest_seqno;

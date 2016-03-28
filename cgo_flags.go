@@ -4,20 +4,20 @@
 package rocksdb
 
 import (
-	// explicit because these Go libraries do not export any Go symbols.
-	_ "github.com/cockroachdb/c-lz4"
+	// explicit because these Go packages do not export any Go symbols, but they
+	// do export c/c++ symbols which will be needed by the final binary
+	// containing this package.
 	_ "github.com/cockroachdb/c-snappy"
 )
 
 // #cgo CPPFLAGS: -Iinternal -Iinternal/include -Iinternal/db -Iinternal/util
 // #cgo CPPFLAGS: -Iinternal/utilities/merge_operators/string_append
 // #cgo CPPFLAGS: -I../c-snappy/internal -I../c-lz4/internal/lib
-// #cgo CPPFLAGS: -DROCKSDB_PLATFORM_POSIX -DNDEBUG -DSNAPPY -DLZ4
+// #cgo CPPFLAGS: -DNDEBUG -DROCKSDB_PLATFORM_POSIX -DROCKSDB_LIB_IO_POSIX -DSNAPPY
 // #cgo darwin CPPFLAGS: -DOS_MACOSX
-// #cgo linux CPPFLAGS: -DOS_LINUX
+// #cgo linux CPPFLAGS: -DOS_LINUX -fno-builtin-memcmp -DROCKSDB_FALLOCATE_PRESENT -DROCKSDB_MALLOC_USABLE_SIZE
 // #cgo freebsd CPPFLAGS: -DOS_FREEBSD
 // #cgo dragonfly CPPFLAGS: -DOS_DRAGONFLY
-// #cgo CXXFLAGS: -W -Wextra -Wall -Wsign-compare -Wshadow -Wno-unused-parameter
 // #cgo CXXFLAGS: -std=c++11 -fno-omit-frame-pointer -momit-leaf-frame-pointer
 // #cgo darwin CXXFLAGS: -Wshorten-64-to-32
 // #cgo freebsd CXXFLAGS: -Wshorten-64-to-32

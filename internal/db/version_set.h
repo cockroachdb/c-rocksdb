@@ -48,7 +48,7 @@ class Writer;
 }
 
 class Compaction;
-class Iterator;
+class InternalIterator;
 class LogBuffer;
 class LookupKey;
 class MemTable;
@@ -97,7 +97,7 @@ class VersionStorageInfo {
 
   void Reserve(int level, size_t size) { files_[level].reserve(size); }
 
-  void AddFile(int level, FileMetaData* f);
+  void AddFile(int level, FileMetaData* f, Logger* info_log = nullptr);
 
   void SetFinalized();
 
@@ -132,8 +132,9 @@ class VersionStorageInfo {
   // Generate level_files_brief_ from files_
   void GenerateLevelFilesBrief();
   // Sort all files for this version based on their file size and
-  // record results in files_by_size_. The largest files are listed first.
-  void UpdateFilesBySize();
+  // record results in files_by_compaction_pri_. The largest files are listed
+  // first.
+  void UpdateFilesByCompactionPri(const MutableCFOptions& mutable_cf_options);
 
   void GenerateLevel0NonOverlapping();
   bool level0_non_overlapping() const {
@@ -158,23 +159,26 @@ class VersionStorageInfo {
       int level, const InternalKey* begin,  // nullptr means before all keys
       const InternalKey* end,               // nullptr means after all keys
       std::vector<FileMetaData*>* inputs,
-      int hint_index = -1,         // index of overlap file
-      int* file_index = nullptr);  // return index of overlap file
+      int hint_index = -1,        // index of overlap file
+      int* file_index = nullptr,  // return index of overlap file
+      bool expand_range = true)   // if set, returns files which overlap the
+      const;                      // range and overlap each other. If false,
+                                  // then just files intersecting the range
 
   void GetOverlappingInputsBinarySearch(
       int level,
       const Slice& begin,  // nullptr means before all keys
       const Slice& end,    // nullptr means after all keys
       std::vector<FileMetaData*>* inputs,
-      int hint_index,    // index of overlap file
-      int* file_index);  // return index of overlap file
+      int hint_index,          // index of overlap file
+      int* file_index) const;  // return index of overlap file
 
   void ExtendOverlappingInputs(
       int level,
       const Slice& begin,  // nullptr means before all keys
       const Slice& end,    // nullptr means after all keys
       std::vector<FileMetaData*>* inputs,
-      unsigned int index);  // start extending from this index
+      unsigned int index) const;  // start extending from this index
 
   // Returns true iff some file in the specified level overlaps
   // some part of [*smallest_user_key,*largest_user_key].
@@ -226,9 +230,9 @@ class VersionStorageInfo {
   }
 
   // REQUIRES: This version has been saved (see VersionSet::SaveTo)
-  const std::vector<int>& FilesBySize(int level) const {
+  const std::vector<int>& FilesByCompactionPri(int level) const {
     assert(finalized_);
-    return files_by_size_[level];
+    return files_by_compaction_pri_[level];
   }
 
   // REQUIRES: This version has been saved (see VersionSet::SaveTo)
@@ -242,7 +246,7 @@ class VersionStorageInfo {
   int base_level() const { return base_level_; }
 
   // REQUIRES: lock is held
-  // Set the index that is used to offset into files_by_size_ to find
+  // Set the index that is used to offset into files_by_compaction_pri_ to find
   // the next compaction candidate file.
   void SetNextCompactionIndex(int level, int index) {
     next_file_to_compact_by_size_[level] = index;
@@ -259,7 +263,7 @@ class VersionStorageInfo {
     return file_indexer_;
   }
 
-  // Only the first few entries of files_by_size_ are sorted.
+  // Only the first few entries of files_by_compaction_pri_ are sorted.
   // There is no need to sort all the files because it is likely
   // that on a running system, we need to look at only the first
   // few largest files because a new version is created every few
@@ -299,7 +303,8 @@ class VersionStorageInfo {
 
   uint64_t GetEstimatedActiveKeys() const;
 
-  // re-initializes the index that is used to offset into files_by_size_
+  // re-initializes the index that is used to offset into
+  // files_by_compaction_pri_
   // to find the next compaction candidate file.
   void ResetNextCompactionIndex(int level) {
     next_file_to_compact_by_size_[level] = 0;
@@ -351,16 +356,16 @@ class VersionStorageInfo {
   // but files in each level are now sorted based on file
   // size. The file with the largest size is at the front.
   // This vector stores the index of the file from files_.
-  std::vector<std::vector<int>> files_by_size_;
+  std::vector<std::vector<int>> files_by_compaction_pri_;
 
   // If true, means that files in L0 have keys with non overlapping ranges
   bool level0_non_overlapping_;
 
-  // An index into files_by_size_ that specifies the first
+  // An index into files_by_compaction_pri_ that specifies the first
   // file that is not yet compacted
   std::vector<int> next_file_to_compact_by_size_;
 
-  // Only the first few entries of files_by_size_ are sorted.
+  // Only the first few entries of files_by_compaction_pri_ are sorted.
   // There is no need to sort all the files because it is likely
   // that on a running system, we need to look at only the first
   // few largest files because a new version is created every few
@@ -454,15 +459,16 @@ class Version {
   // file-name conversion.
   Status GetTableProperties(std::shared_ptr<const TableProperties>* tp,
                             const FileMetaData* file_meta,
-                            const std::string* fname = nullptr);
+                            const std::string* fname = nullptr) const;
 
   // REQUIRES: lock is held
   // On success, *props will be populated with all SSTables' table properties.
   // The keys of `props` are the sst file name, the values of `props` are the
   // tables' propertis, represented as shared_ptr.
   Status GetPropertiesOfAllTables(TablePropertiesCollection* props);
-
   Status GetPropertiesOfAllTables(TablePropertiesCollection* props, int level);
+  Status GetPropertiesOfTablesInRange(const Range* range, std::size_t n,
+                                      TablePropertiesCollection* props) const;
 
   // REQUIRES: lock is held
   // On success, "tp" will contains the aggregated table property amoug
@@ -500,7 +506,8 @@ class Version {
     return storage_info_.user_comparator_;
   }
 
-  bool PrefixMayMatch(const ReadOptions& read_options, Iterator* level_iter,
+  bool PrefixMayMatch(const ReadOptions& read_options,
+                      InternalIterator* level_iter,
                       const Slice& internal_prefix) const;
 
   // The helper function of UpdateAccumulatedStats, which may fill the missing
@@ -513,8 +520,9 @@ class Version {
   void UpdateAccumulatedStats(bool update_stats);
 
   // Sort all files for this version based on their file size and
-  // record results in files_by_size_. The largest files are listed first.
-  void UpdateFilesBySize();
+  // record results in files_by_compaction_pri_. The largest files are listed
+  // first.
+  void UpdateFilesByCompactionPri();
 
   ColumnFamilyData* cfd_;  // ColumnFamilyData to which this Version belongs
   Logger* info_log_;
@@ -640,7 +648,7 @@ class VersionSet {
 
   // Create an iterator that reads over the compaction inputs for "*c".
   // The caller should delete the iterator when no longer needed.
-  Iterator* MakeInputIterator(Compaction* c);
+  InternalIterator* MakeInputIterator(Compaction* c);
 
   // Add all files listed in any live version to *live.
   void AddLiveFiles(std::vector<FileDescriptor>* live_list);
@@ -663,6 +671,7 @@ class VersionSet {
   Status GetMetadataForFile(uint64_t number, int* filelevel,
                             FileMetaData** metadata, ColumnFamilyData** cfd);
 
+  // This function doesn't support leveldb SST filenames
   void GetLiveFilesMetaData(std::vector<LiveFileMetaData> *metadata);
 
   void GetObsoleteFiles(std::vector<FileMetaData*>* files,

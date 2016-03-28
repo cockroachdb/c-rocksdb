@@ -56,6 +56,7 @@ struct TableProperties {
 
   // user collected properties
   UserCollectedProperties user_collected_properties;
+  UserCollectedProperties readable_properties;
 
   // convert this object to a human readable form
   //   @prop_delim: delimiter for each property.
@@ -86,6 +87,7 @@ extern const std::string kPropertiesBlock;
 enum EntryType {
   kEntryPut,
   kEntryDelete,
+  kEntrySingleDelete,
   kEntryMerge,
   kEntryOther,
 };
@@ -105,7 +107,7 @@ class TablePropertiesCollector {
   // Add() will be called when a new key/value pair is inserted into the table.
   // @params key    the user key that is inserted into the table.
   // @params value  the value that is inserted into the table.
-  virtual Status Add(const Slice& key, const Slice& value) {
+  virtual Status Add(const Slice& /*key*/, const Slice& /*value*/) {
     return Status::InvalidArgument(
         "TablePropertiesCollector::Add() deprecated.");
   }
@@ -114,10 +116,9 @@ class TablePropertiesCollector {
   // table.
   // @params key    the user key that is inserted into the table.
   // @params value  the value that is inserted into the table.
-  // @params file_size  file size up to now
   virtual Status AddUserKey(const Slice& key, const Slice& value,
-                            EntryType type, SequenceNumber seq,
-                            uint64_t file_size) {
+                            EntryType /*type*/, SequenceNumber /*seq*/,
+                            uint64_t /*file_size*/) {
     // For backwards-compatibility.
     return Add(key, value);
   }
@@ -143,9 +144,15 @@ class TablePropertiesCollector {
 // TablePropertiesCollector for each new table
 class TablePropertiesCollectorFactory {
  public:
+  struct Context {
+    uint32_t column_family_id;
+    static const uint32_t kUnknownColumnFamily;
+  };
+
   virtual ~TablePropertiesCollectorFactory() {}
   // has to be thread-safe
-  virtual TablePropertiesCollector* CreateTablePropertiesCollector() = 0;
+  virtual TablePropertiesCollector* CreateTablePropertiesCollector(
+      TablePropertiesCollectorFactory::Context context) = 0;
 
   // The name of the properties collector can be used for debugging purpose.
   virtual const char* Name() const = 0;

@@ -238,7 +238,8 @@ class BaseDeltaIterator : public Iterator {
           // Finished
           return;
         }
-        if (delta_entry.type == kDeleteRecord) {
+        if (delta_entry.type == kDeleteRecord ||
+            delta_entry.type == kSingleDeleteRecord) {
           AdvanceDelta();
         } else {
           current_at_base_ = false;
@@ -256,7 +257,8 @@ class BaseDeltaIterator : public Iterator {
           if (compare == 0) {
             equal_keys_ = true;
           }
-          if (delta_entry.type != kDeleteRecord) {
+          if (delta_entry.type != kDeleteRecord &&
+              delta_entry.type != kSingleDeleteRecord) {
             current_at_base_ = false;
             return;
           }
@@ -344,7 +346,7 @@ class WBWIIteratorImpl : public WBWIIterator {
                                                   &ret.key, &ret.value, &blob);
     assert(s.ok());
     assert(ret.type == kPutRecord || ret.type == kDeleteRecord ||
-           ret.type == kMergeRecord);
+           ret.type == kSingleDeleteRecord || ret.type == kMergeRecord);
     return ret;
   }
 
@@ -507,6 +509,8 @@ void WriteBatchWithIndex::Rep::AddNewEntry(uint32_t column_family_id) {
         case kTypeValue:
         case kTypeColumnFamilyDeletion:
         case kTypeDeletion:
+        case kTypeColumnFamilySingleDeletion:
+        case kTypeSingleDeletion:
         case kTypeColumnFamilyMerge:
         case kTypeMerge:
           found++;
@@ -580,6 +584,32 @@ void WriteBatchWithIndex::Put(const Slice& key, const Slice& value) {
   rep->AddOrUpdateIndex(key);
 }
 
+void WriteBatchWithIndex::Delete(ColumnFamilyHandle* column_family,
+                                 const Slice& key) {
+  rep->SetLastEntryOffset();
+  rep->write_batch.Delete(column_family, key);
+  rep->AddOrUpdateIndex(column_family, key);
+}
+
+void WriteBatchWithIndex::Delete(const Slice& key) {
+  rep->SetLastEntryOffset();
+  rep->write_batch.Delete(key);
+  rep->AddOrUpdateIndex(key);
+}
+
+void WriteBatchWithIndex::SingleDelete(ColumnFamilyHandle* column_family,
+                                       const Slice& key) {
+  rep->SetLastEntryOffset();
+  rep->write_batch.SingleDelete(column_family, key);
+  rep->AddOrUpdateIndex(column_family, key);
+}
+
+void WriteBatchWithIndex::SingleDelete(const Slice& key) {
+  rep->SetLastEntryOffset();
+  rep->write_batch.SingleDelete(key);
+  rep->AddOrUpdateIndex(key);
+}
+
 void WriteBatchWithIndex::Merge(ColumnFamilyHandle* column_family,
                                 const Slice& key, const Slice& value) {
   rep->SetLastEntryOffset();
@@ -595,19 +625,6 @@ void WriteBatchWithIndex::Merge(const Slice& key, const Slice& value) {
 
 void WriteBatchWithIndex::PutLogData(const Slice& blob) {
   rep->write_batch.PutLogData(blob);
-}
-
-void WriteBatchWithIndex::Delete(ColumnFamilyHandle* column_family,
-                                 const Slice& key) {
-  rep->SetLastEntryOffset();
-  rep->write_batch.Delete(column_family, key);
-  rep->AddOrUpdateIndex(column_family, key);
-}
-
-void WriteBatchWithIndex::Delete(const Slice& key) {
-  rep->SetLastEntryOffset();
-  rep->write_batch.Delete(key);
-  rep->AddOrUpdateIndex(key);
 }
 
 void WriteBatchWithIndex::Clear() { rep->Clear(); }

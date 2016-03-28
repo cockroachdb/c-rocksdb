@@ -24,6 +24,9 @@ TEST_F(WritableFileWriterTest, RangeSync) {
       size_ += data.size();
       return Status::OK();
     }
+    virtual Status Truncate(uint64_t size) override {
+      return Status::OK();
+    }
     Status Close() override {
       EXPECT_GE(size_, last_synced_ + kMb);
       EXPECT_LT(size_, last_synced_ + 2 * kMb);
@@ -44,8 +47,8 @@ TEST_F(WritableFileWriterTest, RangeSync) {
     }
 
    protected:
-    Status Allocate(off_t offset, off_t len) override { return Status::OK(); }
-    Status RangeSync(off_t offset, off_t nbytes) override {
+    Status Allocate(uint64_t offset, uint64_t len) override { return Status::OK(); }
+    Status RangeSync(uint64_t offset, uint64_t nbytes) override {
       EXPECT_EQ(offset % 4096, 0u);
       EXPECT_EQ(nbytes % 4096, 0u);
 
@@ -81,6 +84,47 @@ TEST_F(WritableFileWriterTest, RangeSync) {
   }
   writer->Close();
 }
+
+TEST_F(WritableFileWriterTest, AppendStatusReturn) {
+  class FakeWF : public WritableFile {
+   public:
+    explicit FakeWF() : use_os_buffer_(true), io_error_(false) {}
+
+    virtual bool UseOSBuffer() const override { return use_os_buffer_; }
+    Status Append(const Slice& data) override {
+      if (io_error_) {
+        return Status::IOError("Fake IO error");
+      }
+      return Status::OK();
+    }
+    Status PositionedAppend(const Slice& data, uint64_t) override {
+      if (io_error_) {
+        return Status::IOError("Fake IO error");
+      }
+      return Status::OK();
+    }
+    Status Close() override { return Status::OK(); }
+    Status Flush() override { return Status::OK(); }
+    Status Sync() override { return Status::OK(); }
+    void SetUseOSBuffer(bool val) { use_os_buffer_ = val; }
+    void SetIOError(bool val) { io_error_ = val; }
+
+   protected:
+    bool use_os_buffer_;
+    bool io_error_;
+  };
+  unique_ptr<FakeWF> wf(new FakeWF());
+  wf->SetUseOSBuffer(false);
+  unique_ptr<WritableFileWriter> writer(
+      new WritableFileWriter(std::move(wf), EnvOptions()));
+
+  ASSERT_OK(writer->Append(std::string(2 * kMb, 'a')));
+
+  // Next call to WritableFile::Append() should fail
+  dynamic_cast<FakeWF*>(writer->writable_file())->SetIOError(true);
+  ASSERT_NOK(writer->Append(std::string(2 * kMb, 'b')));
+}
+
 }  // namespace rocksdb
 
 int main(int argc, char** argv) {

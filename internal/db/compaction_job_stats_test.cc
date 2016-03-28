@@ -27,6 +27,7 @@
 #include "db/job_context.h"
 #include "db/version_set.h"
 #include "db/write_batch_internal.h"
+#include "memtable/hash_linklist_rep.h"
 #include "port/stack_trace.h"
 #include "rocksdb/cache.h"
 #include "rocksdb/compaction_filter.h"
@@ -47,14 +48,13 @@
 #include "table/block_based_table_factory.h"
 #include "table/mock_table.h"
 #include "table/plain_table_factory.h"
+#include "table/scoped_arena_iterator.h"
 #include "util/compression.h"
 #include "util/hash.h"
-#include "util/hash_linklist_rep.h"
 #include "util/logging.h"
 #include "util/mock_env.h"
 #include "util/mutexlock.h"
 #include "util/rate_limiter.h"
-#include "util/scoped_arena_iterator.h"
 #include "util/statistics.h"
 #include "util/string_util.h"
 #include "util/sync_point.h"
@@ -64,7 +64,7 @@
 #include "util/xfunc.h"
 #include "utilities/merge_operators.h"
 
-#if !defined(IOS_CROSS_COMPILE) && (!defined(NDEBUG) || !defined(OS_WIN))
+#if !defined(IOS_CROSS_COMPILE)
 #ifndef ROCKSDB_LITE
 namespace rocksdb {
 
@@ -1027,6 +1027,14 @@ int main(int argc, char** argv) {
   rocksdb::port::InstallStackTraceHandler();
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
+}
+
+#else
+#include <stdio.h>
+
+int main(int argc, char** argv) {
+  fprintf(stderr, "SKIPPED, not supported in ROCKSDB_LITE\n");
+  return 0;
 }
 
 #endif  // !ROCKSDB_LITE

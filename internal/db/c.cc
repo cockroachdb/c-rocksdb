@@ -1288,6 +1288,11 @@ void rocksdb_block_based_options_set_cache_index_and_filter_blocks(
   options->rep.cache_index_and_filter_blocks = v;
 }
 
+void rocksdb_block_based_options_set_skip_table_builder_flush(
+    rocksdb_block_based_table_options_t* options, unsigned char v) {
+  options->rep.skip_table_builder_flush = v;
+}
+
 void rocksdb_options_set_block_based_table_factory(
     rocksdb_options_t *opt,
     rocksdb_block_based_table_options_t* table_options) {
@@ -1685,6 +1690,11 @@ void rocksdb_options_set_log_file_time_to_roll(rocksdb_options_t* opt, size_t v)
 
 void rocksdb_options_set_keep_log_file_num(rocksdb_options_t* opt, size_t v) {
   opt->rep.keep_log_file_num = v;
+}
+
+void rocksdb_options_set_recycle_log_file_num(rocksdb_options_t* opt,
+                                              size_t v) {
+  opt->rep.recycle_log_file_num = v;
 }
 
 void rocksdb_options_set_soft_rate_limit(rocksdb_options_t* opt, double v) {
