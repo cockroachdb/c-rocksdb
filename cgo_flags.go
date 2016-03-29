@@ -12,7 +12,7 @@ import (
 
 // #cgo CPPFLAGS: -Iinternal -Iinternal/include -Iinternal/db -Iinternal/util
 // #cgo CPPFLAGS: -Iinternal/utilities/merge_operators/string_append
-// #cgo CPPFLAGS: -I../c-snappy/internal -I../c-lz4/internal/lib
+// #cgo CPPFLAGS: -I../c-snappy/internal
 // #cgo CPPFLAGS: -DNDEBUG -DROCKSDB_PLATFORM_POSIX -DROCKSDB_LIB_IO_POSIX -DSNAPPY
 // #cgo darwin CPPFLAGS: -DOS_MACOSX
 // #cgo linux CPPFLAGS: -DOS_LINUX -fno-builtin-memcmp -DROCKSDB_FALLOCATE_PRESENT -DROCKSDB_MALLOC_USABLE_SIZE
