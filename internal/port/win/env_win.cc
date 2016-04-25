@@ -35,8 +35,8 @@
 #include "util/thread_status_updater.h"
 #include "util/thread_status_util.h"
 
-#include <Rpc.h>  // For UUID generation
-#include <Windows.h>
+#include <rpc.h>  // For UUID generation
+#include <windows.h>
 
 namespace rocksdb {
 
@@ -1640,7 +1640,7 @@ class WinEnv : public Env {
   virtual uint64_t NowMicros() override {
     // all std::chrono clocks on windows proved to return
     // values that may repeat that is not good enough for some uses.
-    const int64_t c_UnixEpochStartTicks = 116444736000000000i64;
+    const int64_t c_UnixEpochStartTicks = 116444736000000000LL;
     const int64_t c_FtToMicroSec = 10;
 
     // This interface needs to return system time and not
