@@ -18,8 +18,7 @@
 
 package rocksdb
 
-// #cgo CPPFLAGS: -DJEMALLOC
-// #cgo darwin LDFLAGS: -Wl,-undefined -Wl,dynamic_lookup
-// #cgo linux LDFLAGS: -Wl,-unresolved-symbols=ignore-all
-
 import _ "github.com/cockroachdb/c-jemalloc"
+
+// #cgo CPPFLAGS: -DJEMALLOC
+import "C"
