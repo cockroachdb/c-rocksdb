@@ -3,17 +3,9 @@
 // compiled in.
 package rocksdb
 
-import (
-	// explicit because these Go packages do not export any Go symbols, but they
-	// do export c/c++ symbols which will be needed by the final binary
-	// containing this package.
-	_ "github.com/cockroachdb/c-snappy"
-)
-
 // #cgo CPPFLAGS: -Iinternal -Iinternal/include -Iinternal/db -Iinternal/util
 // #cgo CPPFLAGS: -Iinternal/utilities/merge_operators/string_append
-// #cgo CPPFLAGS: -I../c-snappy/internal
-// #cgo CPPFLAGS: -DNDEBUG -DSNAPPY
+// #cgo CPPFLAGS: -DNDEBUG
 // #cgo windows CPPFLAGS: -DOS_WIN
 // #cgo !windows CPPFLAGS: -DROCKSDB_PLATFORM_POSIX -DROCKSDB_LIB_IO_POSIX
 // #cgo darwin CPPFLAGS: -DOS_MACOSX
@@ -24,7 +16,5 @@ import (
 // #cgo darwin CXXFLAGS: -Wshorten-64-to-32
 // #cgo freebsd CXXFLAGS: -Wshorten-64-to-32
 // #cgo dragonfly CXXFLAGS: -Wshorten-64-to-32
-// #cgo darwin LDFLAGS: -Wl,-undefined -Wl,dynamic_lookup
-// #cgo !darwin LDFLAGS: -Wl,-unresolved-symbols=ignore-all
 // #cgo windows LDFLAGS: -lrpcrt4
 import "C"
