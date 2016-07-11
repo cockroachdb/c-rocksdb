@@ -1,4 +1,4 @@
-// Copyright (c) 2015, Facebook, Inc.  All rights reserved.
+// Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
 // This source code is licensed under the BSD-style license found in the
 // LICENSE file in the root directory of this source tree. An additional grant
 // of patent rights can be found in the PATENTS file in the same directory.
@@ -125,9 +125,9 @@ LoggerJniCallback::~LoggerJniCallback() {
 /*
  * Class:     org_rocksdb_Logger
  * Method:    createNewLoggerOptions
- * Signature: (J)V
+ * Signature: (J)J
  */
-void Java_org_rocksdb_Logger_createNewLoggerOptions(
+jlong Java_org_rocksdb_Logger_createNewLoggerOptions(
     JNIEnv* env, jobject jobj, jlong joptions) {
   rocksdb::LoggerJniCallback* c =
       new rocksdb::LoggerJniCallback(env, jobj);
@@ -137,15 +137,15 @@ void Java_org_rocksdb_Logger_createNewLoggerOptions(
   std::shared_ptr<rocksdb::LoggerJniCallback> *pLoggerJniCallback =
       new std::shared_ptr<rocksdb::LoggerJniCallback>;
   *pLoggerJniCallback = std::shared_ptr<rocksdb::LoggerJniCallback>(c);
-  rocksdb::LoggerJni::setHandle(env, jobj, pLoggerJniCallback);
+  return reinterpret_cast<jlong>(pLoggerJniCallback);
 }
 
 /*
  * Class:     org_rocksdb_Logger
  * Method:    createNewLoggerDbOptions
- * Signature: (J)V
+ * Signature: (J)J
  */
-void Java_org_rocksdb_Logger_createNewLoggerDbOptions(
+jlong Java_org_rocksdb_Logger_createNewLoggerDbOptions(
     JNIEnv* env, jobject jobj, jlong jdb_options) {
   rocksdb::LoggerJniCallback* c =
       new rocksdb::LoggerJniCallback(env, jobj);
@@ -155,7 +155,7 @@ void Java_org_rocksdb_Logger_createNewLoggerDbOptions(
   std::shared_ptr<rocksdb::LoggerJniCallback> *pLoggerJniCallback =
       new std::shared_ptr<rocksdb::LoggerJniCallback>;
   *pLoggerJniCallback = std::shared_ptr<rocksdb::LoggerJniCallback>(c);
-  rocksdb::LoggerJni::setHandle(env, jobj, pLoggerJniCallback);
+  return reinterpret_cast<jlong>(pLoggerJniCallback);
 }
 
 /*
