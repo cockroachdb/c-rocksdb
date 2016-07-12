@@ -1,5 +1,5 @@
 diff --git a/internal/port/win/env_win.cc b/internal/port/win/env_win.cc
-index 90b04b5..ad7fcfe 100644
+index fb323e2..9f54d64 100644
 --- a/internal/port/win/env_win.cc
 +++ b/internal/port/win/env_win.cc
 @@ -35,8 +35,8 @@
@@ -13,17 +13,17 @@ index 90b04b5..ad7fcfe 100644
  
  namespace rocksdb {
  
-@@ -1640,7 +1640,7 @@ class WinEnv : public Env {
-   virtual uint64_t NowMicros() override {
-     // all std::chrono clocks on windows proved to return
-     // values that may repeat that is not good enough for some uses.
--    const int64_t c_UnixEpochStartTicks = 116444736000000000i64;
-+    const int64_t c_UnixEpochStartTicks = 116444736000000000LL;
-     const int64_t c_FtToMicroSec = 10;
+@@ -1665,7 +1665,7 @@ class WinEnv : public Env {
+     if (GetSystemTimePreciseAsFileTime_ != NULL) {
+       // all std::chrono clocks on windows proved to return
+       // values that may repeat that is not good enough for some uses.
+-      const int64_t c_UnixEpochStartTicks = 116444736000000000i64;
++      const int64_t c_UnixEpochStartTicks = 116444736000000000LL;
+       const int64_t c_FtToMicroSec = 10;
  
-     // This interface needs to return system time and not
+       // This interface needs to return system time and not
 diff --git a/internal/port/win/win_logger.h b/internal/port/win/win_logger.h
-index 1460ba8..f8626d1 100644
+index a85f24c..5f73619 100644
 --- a/internal/port/win/win_logger.h
 +++ b/internal/port/win/win_logger.h
 @@ -17,7 +17,7 @@

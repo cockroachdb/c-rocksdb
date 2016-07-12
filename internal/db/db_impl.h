@@ -1,4 +1,4 @@
-//  Copyright (c) 2013, Facebook, Inc.  All rights reserved.
+//  Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
 //  This source code is licensed under the BSD-style license found in the
 //  LICENSE file in the root directory of this source tree. An additional grant
 //  of patent rights can be found in the PATENTS file in the same directory.
@@ -188,6 +188,8 @@ class DBImpl : public DB {
       const TransactionLogIterator::ReadOptions&
           read_options = TransactionLogIterator::ReadOptions()) override;
   virtual Status DeleteFile(std::string name) override;
+  Status DeleteFilesInRange(ColumnFamilyHandle* column_family,
+                            const Slice* begin, const Slice* end);
 
   virtual void GetLiveFilesMetaData(
       std::vector<LiveFileMetaData>* metadata) override;
@@ -226,13 +228,30 @@ class DBImpl : public DB {
                                                    bool include_history);
 
   // For a given key, check to see if there are any records for this key
-  // in the memtables, including memtable history.
-
-  // On success, *seq will contain the sequence number for the
-  // latest such change or kMaxSequenceNumber if no records were present.
-  // Returns OK on success, other status on error reading memtables.
-  Status GetLatestSequenceForKeyFromMemtable(SuperVersion* sv, const Slice& key,
-                                             SequenceNumber* seq);
+  // in the memtables, including memtable history.  If cache_only is false,
+  // SST files will also be checked.
+  //
+  // If a key is found, *found_record_for_key will be set to true and
+  // *seq will be set to the stored sequence number for the latest
+  // operation on this key or kMaxSequenceNumber if unknown.
+  // If no key is found, *found_record_for_key will be set to false.
+  //
+  // Note: If cache_only=false, it is possible for *seq to be set to 0 if
+  // the sequence number has been cleared from the record.  If the caller is
+  // holding an active db snapshot, we know the missing sequence must be less
+  // than the snapshot's sequence number (sequence numbers are only cleared
+  // when there are no earlier active snapshots).
+  //
+  // If NotFound is returned and found_record_for_key is set to false, then no
+  // record for this key was found.  If the caller is holding an active db
+  // snapshot, we know that no key could have existing after this snapshot
+  // (since we do not compact keys that have an earlier snapshot).
+  //
+  // Returns OK or NotFound on success,
+  // other status on unexpected error.
+  Status GetLatestSequenceForKey(SuperVersion* sv, const Slice& key,
+                                 bool cache_only, SequenceNumber* seq,
+                                 bool* found_record_for_key);
 
   using DB::AddFile;
   virtual Status AddFile(ColumnFamilyHandle* column_family,
@@ -243,6 +262,12 @@ class DBImpl : public DB {
 
 #endif  // ROCKSDB_LITE
 
+  // Similar to GetSnapshot(), but also lets the db know that this snapshot
+  // will be used for transaction write-conflict checking.  The DB can then
+  // make sure not to compact any keys that would prevent a write-conflict from
+  // being detected.
+  const Snapshot* GetSnapshotForWriteConflictBoundary();
+
   // checks if all live files exist on file system and that their file sizes
   // match to our in-memory records
   virtual Status CheckConsistency();
@@ -252,6 +277,7 @@ class DBImpl : public DB {
   Status RunManualCompaction(ColumnFamilyData* cfd, int input_level,
                              int output_level, uint32_t output_path_id,
                              const Slice* begin, const Slice* end,
+                             bool exclusive,
                              bool disallow_trivial_move = false);
 
   // Return an internal iterator over the current state of the database.
@@ -317,11 +343,13 @@ class DBImpl : public DB {
 
   Cache* TEST_table_cache() { return table_cache_.get(); }
 
-  const WriteController& TEST_write_controler() const {
-    return write_controller_;
-  }
+  WriteController& TEST_write_controler() { return write_controller_; }
 
 #endif  // NDEBUG
+
+  // Return maximum background compaction alowed to be scheduled based on
+  // compaction status.
+  int BGCompactionsAllowed() const;
 
   // Returns the list of live files in 'live' and the list
   // of all files in the filesystem in 'candidate_files'.
@@ -455,7 +483,8 @@ class DBImpl : public DB {
   // amount of work to recover recently logged updates.  Any changes to
   // be made to the descriptor are added to *edit.
   Status Recover(const std::vector<ColumnFamilyDescriptor>& column_families,
-                 bool read_only = false, bool error_if_log_file_exist = false);
+                 bool read_only = false, bool error_if_log_file_exist = false,
+                 bool error_if_data_exists_in_logs = false);
 
   void MaybeIgnoreError(Status* s) const;
 
@@ -466,10 +495,11 @@ class DBImpl : public DB {
 
   // Background process needs to call
   //     auto x = CaptureCurrentFileNumberInPendingOutputs()
+  //     auto file_num = versions_->NewFileNumber();
   //     <do something>
   //     ReleaseFileNumberFromPendingOutputs(x)
-  // This will protect any temporary files created while <do something> is
-  // executing from being deleted.
+  // This will protect any file with number `file_num` or greater from being
+  // deleted while <do something> is running.
   // -----------
   // This function will capture current file number and append it to
   // pending_outputs_. This will prevent any background process to delete any
@@ -494,7 +524,7 @@ class DBImpl : public DB {
                          SequenceNumber* max_sequence, bool read_only);
 
   // The following two methods are used to flush a memtable to
-  // storage. The first one is used atdatabase RecoveryTime (when the
+  // storage. The first one is used at database RecoveryTime (when the
   // database is opened) and is heavyweight because it holds the mutex
   // for the entire period. The second method WriteLevel0Table supports
   // concurrent flush memtables to storage.
@@ -515,9 +545,6 @@ class DBImpl : public DB {
   // Wait for memtable flushed
   Status WaitForFlushMemTable(ColumnFamilyData* cfd);
 
-  void RecordFlushIOStats();
-  void RecordCompactionIOStats();
-
 #ifndef ROCKSDB_LITE
   Status CompactFilesImpl(
       const CompactionOptions& compact_options, ColumnFamilyData* cfd,
@@ -531,12 +558,13 @@ class DBImpl : public DB {
   void MaybeScheduleFlushOrCompaction();
   void SchedulePendingFlush(ColumnFamilyData* cfd);
   void SchedulePendingCompaction(ColumnFamilyData* cfd);
-  static void BGWorkCompaction(void* db);
+  static void BGWorkCompaction(void* arg);
   static void BGWorkFlush(void* db);
-  void BackgroundCallCompaction();
+  static void UnscheduleCallback(void* arg);
+  void BackgroundCallCompaction(void* arg);
   void BackgroundCallFlush();
   Status BackgroundCompaction(bool* madeProgress, JobContext* job_context,
-                              LogBuffer* log_buffer);
+                              LogBuffer* log_buffer, void* m = 0);
   Status BackgroundFlush(bool* madeProgress, JobContext* job_context,
                          LogBuffer* log_buffer);
 
@@ -564,6 +592,8 @@ class DBImpl : public DB {
   // helper function to call after some of the logs_ were synced
   void MarkLogsSynced(uint64_t up_to, bool synced_dir, const Status& status);
 
+  const Snapshot* GetSnapshotImpl(bool is_write_conflict_boundary);
+
   // table_cache_ provides its own synchronization
   std::shared_ptr<Cache> table_cache_;
 
@@ -580,7 +610,7 @@ class DBImpl : public DB {
   std::atomic<bool> shutting_down_;
   // This condition variable is signaled on these conditions:
   // * whenever bg_compaction_scheduled_ goes down to 0
-  // * if bg_manual_only_ > 0, whenever a compaction finishes, even if it hasn't
+  // * if AnyManualCompaction, whenever a compaction finishes, even if it hasn't
   // made any progress
   // * whenever a compaction made any progress
   // * whenever bg_flush_scheduled_ value decreases (i.e. whenever a flush is
@@ -738,11 +768,6 @@ class DBImpl : public DB {
   // stores the number of compactions are currently running
   int num_running_compactions_;
 
-  // If non-zero, MaybeScheduleFlushOrCompaction() will only schedule manual
-  // compactions (if manual_compaction_ is not null). This mechanism enables
-  // manual compactions to wait until all other compactions are finished.
-  int bg_manual_only_;
-
   // number of background memtable flush jobs, submitted to the HIGH pool
   int bg_flush_scheduled_;
 
@@ -755,15 +780,25 @@ class DBImpl : public DB {
     int input_level;
     int output_level;
     uint32_t output_path_id;
-    bool done;
     Status status;
+    bool done;
     bool in_progress;             // compaction request being processed?
+    bool incomplete;              // only part of requested range compacted
+    bool exclusive;               // current behavior of only one manual
+    bool disallow_trivial_move;   // Force actual compaction to run
     const InternalKey* begin;     // nullptr means beginning of key range
     const InternalKey* end;       // nullptr means end of key range
+    InternalKey* manual_end;      // how far we are compacting
     InternalKey tmp_storage;      // Used to keep track of compaction progress
-    bool disallow_trivial_move;   // Force actual compaction to run
+    InternalKey tmp_storage1;     // Used to keep track of compaction progress
+    Compaction* compaction;
   };
-  ManualCompaction* manual_compaction_;
+  std::deque<ManualCompaction*> manual_compaction_dequeue_;
+
+  struct CompactionArg {
+    DBImpl* db;
+    ManualCompaction* m;
+  };
 
   // Have we encountered a background error in paranoid mode?
   Status bg_error_;
@@ -786,7 +821,10 @@ class DBImpl : public DB {
   // they're unique
   std::atomic<int> next_job_id_;
 
-  bool flush_on_destroy_; // Used when disableWAL is true.
+  // A flag indicating whether the current rocksdb database has any
+  // data that is not yet persisted into either WAL or SST file.
+  // Used when disableWAL is true.
+  bool has_unpersisted_data_;
 
   static const int KEEP_LOG_FILE_NUM = 1000;
   // MSVC version 1800 still does not have constexpr for ::max()
@@ -804,8 +842,11 @@ class DBImpl : public DB {
   // Unified interface for logging events
   EventLogger event_logger_;
 
-  // A value of >0 temporarily disables scheduling of background work
+  // A value of > 0 temporarily disables scheduling of background work
   int bg_work_paused_;
+
+  // A value of > 0 temporarily disables scheduling of background compaction
+  int bg_compaction_paused_;
 
   // Guard against multiple concurrent refitting
   bool refitting_level_;
@@ -857,9 +898,16 @@ class DBImpl : public DB {
                  bool* value_found = nullptr);
 
   bool GetIntPropertyInternal(ColumnFamilyData* cfd,
-                              DBPropertyType property_type,
-                              bool need_out_of_mutex, bool is_locked,
-                              uint64_t* value);
+                              const DBPropertyInfo& property_info,
+                              bool is_locked, uint64_t* value);
+
+  bool HasPendingManualCompaction();
+  bool HasExclusiveManualCompaction();
+  void AddManualCompaction(ManualCompaction* m);
+  void RemoveManualCompaction(ManualCompaction* m);
+  bool ShouldntRunManualCompaction(ManualCompaction* m);
+  bool HaveManualCompaction(ColumnFamilyData* cfd);
+  bool MCOverlap(ManualCompaction* m, ManualCompaction* m1);
 };
 
 // Sanitize db options.  The caller should delete result.info_log if

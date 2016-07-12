@@ -1,4 +1,4 @@
-//  Copyright (c) 2013, Facebook, Inc.  All rights reserved.
+//  Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
 //  This source code is licensed under the BSD-style license found in the
 //  LICENSE file in the root directory of this source tree. An additional grant
 //  of patent rights can be found in the PATENTS file in the same directory.
@@ -13,7 +13,6 @@
 #include <string>
 #include <vector>
 
-#include "db/dbformat.h"
 #include "rocksdb/compaction_filter.h"
 #include "rocksdb/env.h"
 #include "rocksdb/iterator.h"
@@ -237,7 +236,8 @@ class StringSource: public RandomAccessFile {
                         bool mmap = false)
       : contents_(contents.data(), contents.size()),
         uniq_id_(uniq_id),
-        mmap_(mmap) {}
+        mmap_(mmap),
+        total_reads_(0) {}
 
   virtual ~StringSource() { }
 
@@ -245,6 +245,7 @@ class StringSource: public RandomAccessFile {
 
   virtual Status Read(uint64_t offset, size_t n, Slice* result,
       char* scratch) const override {
+    total_reads_++;
     if (offset > contents_.size()) {
       return Status::InvalidArgument("invalid Read offset");
     }
@@ -271,10 +272,15 @@ class StringSource: public RandomAccessFile {
     return static_cast<size_t>(rid-id);
   }
 
+  int total_reads() const { return total_reads_; }
+
+  void set_total_reads(int tr) { total_reads_ = tr; }
+
  private:
   std::string contents_;
   uint64_t uniq_id_;
   bool mmap_;
+  mutable int total_reads_;
 };
 
 class NullLogger : public Logger {
@@ -316,7 +322,7 @@ class SleepingBackgroundTask {
   }
   void WaitUntilSleeping() {
     MutexLock l(&mutex_);
-    while (!sleeping_) {
+    while (!sleeping_ || !should_sleep_) {
       bg_cv_.Wait();
     }
   }

@@ -1,4 +1,4 @@
-//  Copyright (c) 2015, Facebook, Inc.  All rights reserved.
+//  Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
 //  This source code is licensed under the BSD-style license found in the
 //  LICENSE file in the root directory of this source tree. An additional grant
 //  of patent rights can be found in the PATENTS file in the same directory.
@@ -645,16 +645,15 @@ class FaultInjectionTest : public testing::Test,
     return test::RandomString(&r, kValueSize, storage);
   }
 
-  Status OpenDB() {
-    delete db_;
-    db_ = NULL;
-    env_->ResetState();
-    return DB::Open(options_, dbname_, &db_);
-  }
-
   void CloseDB() {
     delete db_;
     db_ = NULL;
+  }
+
+  Status OpenDB() {
+    CloseDB();
+    env_->ResetState();
+    return DB::Open(options_, dbname_, &db_);
   }
 
   void DeleteAllData() {
@@ -784,6 +783,7 @@ TEST_P(FaultInjectionTest, WriteOptionSyncTest) {
   // Block the job queue to prevent flush job from running.
   env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &sleeping_task_low,
                  Env::Priority::HIGH);
+  sleeping_task_low.WaitUntilSleeping();
 
   WriteOptions write_options;
   write_options.sync = false;
@@ -867,6 +867,7 @@ TEST_P(FaultInjectionTest, ManualLogSyncTest) {
   // Block the job queue to prevent flush job from running.
   env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &sleeping_task_low,
                  Env::Priority::HIGH);
+  sleeping_task_low.WaitUntilSleeping();
 
   WriteOptions write_options;
   write_options.sync = false;

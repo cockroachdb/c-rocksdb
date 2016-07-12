@@ -13,8 +13,8 @@
 #        cd build
 # 3. Run cmake to generate project files for Windows, add more options to enable required third-party libraries.
 #    See thirdparty.inc for more information.
-#        sample command: cmake -G "Visual Studio 12 Win64" -DGFLAGS=1 -DSNAPPY=1 -DJEMALLOC=1 ..
-#        OR for VS Studio 15 cmake -G "Visual Studio 14 Win64" -DGFLAGS=1 -DSNAPPY=1 -DJEMALLOC=1 ..
+#        sample command: cmake -G "Visual Studio 12 Win64" -DGFLAGS=1 -DSNAPPY=1 -DJEMALLOC=1 -DJNI=1 ..
+#        OR for VS Studio 15 cmake -G "Visual Studio 14 Win64" -DGFLAGS=1 -DSNAPPY=1 -DJEMALLOC=1 -DJNI=1 ..
 # 4. Then build the project in debug mode (you may want to add /m[:<N>] flag to run msbuild in <N> parallel threads
 #                                          or simply /m ot use all avail cores)
 #        msbuild rocksdb.sln
@@ -30,10 +30,9 @@ cmake_minimum_required(VERSION 2.6)
 project(rocksdb)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/thirdparty.inc)
-
-execute_process(COMMAND $ENV{COMSPEC} " /C date /T" OUTPUT_VARIABLE DATE)
-execute_process(COMMAND $ENV{COMSPEC} " /C time /T" OUTPUT_VARIABLE TIME)
-string(REGEX REPLACE "(..)/(..)/..(..).*" "\\1/\\2/\\3" DATE ${DATE})
+execute_process(COMMAND powershell -Command "Get-Date -format MM_dd_yyyy" OUTPUT_VARIABLE DATE)
+execute_process(COMMAND powershell -Command "Get-Date -format HH:mm:ss" OUTPUT_VARIABLE TIME)
+string(REGEX REPLACE "(..)_(..)_..(..).*" "\\1/\\2/\\3" DATE ${DATE})
 string(REGEX REPLACE "(..):(.....).*" " \\1:\\2" TIME ${TIME})
 string(CONCAT GIT_DATE_TIME ${DATE} ${TIME})
 
@@ -60,7 +59,7 @@ add_custom_target(GenerateBuildVersion DEPENDS ${BUILD_VERSION_CC})
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zi /nologo  /EHsc /GS /Gd /GR /GF /fp:precise /Zc:wchar_t /Zc:forScope /errorReport:queue")
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /FC /d2Zi+ /W3 /WX /wd4127 /wd4244 /wd4267 /wd4800 /wd4996")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /FC /d2Zi+ /W3 /WX /wd4127 /wd4800 /wd4996 /wd4351")
 
 # Used to run CI build and tests so we can run faster
 set(OPTIMIZE_DEBUG_DEFAULT 0)        # Debug build is unoptimized by default use -DOPTDBG=1 to optimize
@@ -83,7 +82,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Oxt /Zp8 /Gm- /Gy /MD")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /DEBUG")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /DEBUG")
 
-add_definitions(-DWIN32 -DOS_WIN -D_MBCS -DWIN64)
+add_definitions(-DWIN32 -DOS_WIN -D_MBCS -DWIN64 -DNOMINMAX)
 
 include_directories(${PROJECT_SOURCE_DIR})
 include_directories(${PROJECT_SOURCE_DIR}/include)
@@ -91,7 +90,7 @@ include_directories(${PROJECT_SOURCE_DIR}/third-party/gtest-1.7.0/fused-src)
 
 set(ROCKSDB_LIBS rocksdblib${ARTIFACT_SUFFIX})
 set(THIRDPARTY_LIBS ${THIRDPARTY_LIBS} gtest)
-set(SYSTEM_LIBS Shlwapi.lib Rpcrt4.lib)
+set(SYSTEM_LIBS ${SYSTEM_LIBS} Shlwapi.lib Rpcrt4.lib)
 
 set(LIBS ${ROCKSDB_LIBS} ${THIRDPARTY_LIBS} ${SYSTEM_LIBS})
 
@@ -99,6 +98,7 @@ add_subdirectory(third-party/gtest-1.7.0/fused-src/gtest)
 
 # Main library source code
 set(SOURCES
+        db/auto_roll_logger.cc
         db/builder.cc
         db/c.cc
         db/column_family.cc
@@ -114,6 +114,7 @@ set(SOURCES
         db/db_impl_debug.cc
         db/db_impl_experimental.cc
         db/db_impl_readonly.cc
+        db/db_info_dumper.cc
         db/db_iter.cc
         db/event_helpers.cc
         db/experimental.cc
@@ -145,13 +146,17 @@ set(SOURCES
         db/write_batch_base.cc
         db/write_controller.cc
         db/write_thread.cc
+        db/xfunc_test_points.cc
         memtable/hash_cuckoo_rep.cc
         memtable/hash_linklist_rep.cc
         memtable/hash_skiplist_rep.cc
+        memtable/skiplistrep.cc
+        memtable/vectorrep.cc
         port/stack_trace.cc
         port/win/env_win.cc
         port/win/port_win.cc
         port/win/win_logger.cc
+        port/win/xpress_win.cc
         table/adaptive_table_factory.cc
         table/block.cc
         table/block_based_filter_block.cc
@@ -173,7 +178,6 @@ set(SOURCES
         table/merger.cc
         table/sst_file_writer.cc
         table/meta_blocks.cc
-        table/mock_table.cc
         table/plain_table_builder.cc
         table/plain_table_factory.cc
         table/plain_table_index.cc
@@ -182,27 +186,29 @@ set(SOURCES
         table/table_properties.cc
         table/two_level_iterator.cc
         tools/sst_dump_tool.cc
+        tools/db_bench_tool.cc
         tools/dump/db_dump_tool.cc
         util/arena.cc
-        util/auto_roll_logger.cc
         util/bloom.cc
         util/build_version.cc
         util/cache.cc
         util/coding.cc
         util/compaction_job_stats_impl.cc
         util/comparator.cc
+        util/concurrent_arena.cc
         util/crc32c.cc
-        util/db_info_dumper.cc
-        util/delete_scheduler_impl.cc
+        util/delete_scheduler.cc
         util/dynamic_bloom.cc
         util/env.cc
         util/env_hdfs.cc
         util/event_logger.cc
         util/file_util.cc
         util/file_reader_writer.cc
+        util/sst_file_manager_impl.cc
         util/filter_policy.cc
         util/hash.cc
         util/histogram.cc
+        util/histogram_windowing.cc
         util/instrumented_mutex.cc
         util/iostats_context.cc
         tools/ldb_cmd.cc
@@ -210,7 +216,6 @@ set(SOURCES
         util/logging.cc
         util/log_buffer.cc
         util/memenv.cc
-        util/mock_env.cc
         util/murmurhash.cc
         util/mutable_cf_options.cc
         util/options.cc
@@ -222,7 +227,6 @@ set(SOURCES
         util/perf_level.cc
         util/random.cc
         util/rate_limiter.cc
-        util/skiplistrep.cc
         util/slice.cc
         util/statistics.cc
         util/status.cc
@@ -236,14 +240,16 @@ set(SOURCES
         util/thread_status_updater.cc
         util/thread_status_util.cc
         util/thread_status_util_debug.cc
-        util/vectorrep.cc
+        util/transaction_test_util.cc
         util/xfunc.cc
         util/xxhash.cc
         utilities/backupable/backupable_db.cc
         utilities/checkpoint/checkpoint.cc
+        utilities/compaction_filters/remove_emptyvalue_compactionfilter.cc
         utilities/document/document_db.cc
         utilities/document/json_document.cc
         utilities/document/json_document_builder.cc
+        utilities/env_mirror.cc
         utilities/flashcache/flashcache.cc
         utilities/geodb/geodb_impl.cc
         utilities/leveldb_options/leveldb_options.cc
@@ -273,6 +279,8 @@ set(SOURCES
 # and linked to tests. Add test only code that is not #ifdefed for Release here.
 set(TESTUTIL_SOURCE
     db/db_test_util.cc
+    table/mock_table.cc
+    util/mock_env.cc
     util/thread_status_updater_debug.cc
 )
 
@@ -285,13 +293,25 @@ set_target_properties(rocksdb${ARTIFACT_SUFFIX} PROPERTIES COMPILE_FLAGS "-DROCK
 add_dependencies(rocksdb${ARTIFACT_SUFFIX} GenerateBuildVersion)
 target_link_libraries(rocksdb${ARTIFACT_SUFFIX} ${LIBS})
 
+if (DEFINED JNI)
+  if (${JNI} EQUAL 1)
+    message(STATUS "JNI library is enabled")
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/java)
+  else()
+    message(STATUS "JNI library is disabled")
+  endif()
+else()
+  message(STATUS "JNI library is disabled")
+endif()
+
 set(APPS
-        db/db_bench.cc
+        tools/db_bench.cc
         db/memtablerep_bench.cc
         table/table_reader_bench.cc
         tools/db_stress.cc
         tools/write_stress.cc
         tools/db_repl_stress.cc
+        tools/ldb.cc
         tools/sst_dump.cc
         tools/dump/rocksdb_dump.cc
         tools/dump/rocksdb_undump.cc
@@ -301,25 +321,33 @@ set(APPS
 set(C_TESTS db/c_test.c)
 
 set(TESTS
+        db/auto_roll_logger_test.cc
         db/column_family_test.cc
         db/compact_files_test.cc
+        db/compaction_iterator_test.cc
         db/compaction_job_test.cc
         db/compaction_job_stats_test.cc
         db/compaction_picker_test.cc
         db/comparator_db_test.cc
         db/corruption_test.cc
         db/cuckoo_table_db_test.cc
-        db/db_iter_test.cc
-        db/db_test.cc
         db/db_compaction_filter_test.cc
         db/db_compaction_test.cc
         db/db_dynamic_level_test.cc
         db/db_inplace_update_test.cc
+        db/db_iter_test.cc
         db/db_log_iter_test.cc
+        db/db_properties_test.cc
+        db/db_table_properties_test.cc
+        db/db_tailing_iter_test.cc
+        db/db_test.cc
+        db/db_test2.cc
+        db/db_block_cache_test.cc
+        db/db_bloom_filter_test.cc
+        db/db_iterator_test.cc
+        db/db_sst_test.cc
         db/db_universal_compaction_test.cc
         db/db_wal_test.cc
-        db/db_tailing_iter_test.cc
-        db/db_table_properties_test.cc
         db/dbformat_test.cc
         db/deletefile_test.cc
         db/fault_injection_test.cc
@@ -337,6 +365,7 @@ set(TESTS
         db/perf_context_test.cc
         db/plain_table_db_test.cc
         db/prefix_test.cc
+        db/repair_test.cc
         db/skiplist_test.cc
         db/table_properties_collector_test.cc
         db/version_builder_test.cc
@@ -360,11 +389,11 @@ set(TESTS
         tools/sst_dump_test.cc
         util/arena_test.cc
         util/autovector_test.cc
-        util/auto_roll_logger_test.cc
         util/bloom_test.cc
         util/cache_test.cc
         util/coding_test.cc
         util/crc32c_test.cc
+        util/delete_scheduler_test.cc
         util/dynamic_bloom_test.cc
         util/env_test.cc
         util/event_logger_test.cc
@@ -372,8 +401,10 @@ set(TESTS
         util/file_reader_writer_test.cc
         util/heap_test.cc
         util/histogram_test.cc
+        util/iostats_context_test.cc
         util/memenv_test.cc
         util/mock_env_test.cc
+        util/options_settable_test.cc
         util/options_test.cc
         util/rate_limiter_test.cc
         util/slice_transform_test.cc
