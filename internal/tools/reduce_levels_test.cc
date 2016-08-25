@@ -6,13 +6,14 @@
 
 #ifndef ROCKSDB_LITE
 
-#include "rocksdb/db.h"
 #include "db/db_impl.h"
 #include "db/version_set.h"
-#include "tools/ldb_cmd.h"
+#include "rocksdb/db.h"
+#include "rocksdb/utilities/ldb_cmd.h"
+#include "tools/ldb_cmd_impl.h"
 #include "util/logging.h"
-#include "util/testutil.h"
 #include "util/testharness.h"
+#include "util/testutil.h"
 
 namespace rocksdb {
 
@@ -92,8 +93,8 @@ Status ReduceLevelTest::OpenDB(bool create_if_missing, int num_levels) {
 bool ReduceLevelTest::ReduceLevels(int target_level) {
   std::vector<std::string> args = rocksdb::ReduceDBLevelsCommand::PrepareArgs(
       dbname_, target_level, false);
-  LDBCommand* level_reducer =
-      LDBCommand::InitFromCmdLineArgs(args, Options(), LDBOptions(), nullptr);
+  LDBCommand* level_reducer = LDBCommand::InitFromCmdLineArgs(
+      args, Options(), LDBOptions(), nullptr, LDBCommand::SelectCommand);
   level_reducer->Run();
   bool is_succeed = level_reducer->GetExecuteState().IsSucceed();
   delete level_reducer;

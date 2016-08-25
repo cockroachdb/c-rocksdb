@@ -13,6 +13,7 @@
 #include "table/block.h"
 #include "table/format.h"
 #include "table/internal_iterator.h"
+#include "table/persistent_cache_helper.h"
 #include "table/table_properties_internal.h"
 #include "util/coding.h"
 
@@ -88,6 +89,10 @@ void PropertyBlockBuilder::AddTableProperty(const TableProperties& props) {
   if (!props.column_family_name.empty()) {
     Add(TablePropertiesNames::kColumnFamilyName, props.column_family_name);
   }
+
+  if (!props.compression_name.empty()) {
+    Add(TablePropertiesNames::kCompression, props.compression_name);
+  }
 }
 
 Slice PropertyBlockBuilder::Finish() {
@@ -160,7 +165,7 @@ Status ReadProperties(const Slice& handle_value, RandomAccessFileReader* file,
   read_options.verify_checksums = false;
   Status s;
   s = ReadBlockContents(file, footer, read_options, handle, &block_contents,
-                        env, false);
+                        env, false /* decompress */);
 
   if (!s.ok()) {
     return s;
@@ -228,6 +233,8 @@ Status ReadProperties(const Slice& handle_value, RandomAccessFileReader* file,
       new_table_properties->merge_operator_name = raw_val.ToString();
     } else if (key == TablePropertiesNames::kPropertyCollectors) {
       new_table_properties->property_collectors_names = raw_val.ToString();
+    } else if (key == TablePropertiesNames::kCompression) {
+      new_table_properties->compression_name = raw_val.ToString();
     } else {
       // handle user-collected properties
       new_table_properties->user_collected_properties.insert(
@@ -258,7 +265,7 @@ Status ReadTableProperties(RandomAccessFileReader* file, uint64_t file_size,
   ReadOptions read_options;
   read_options.verify_checksums = false;
   s = ReadBlockContents(file, footer, read_options, metaindex_handle,
-                        &metaindex_contents, env, false);
+                        &metaindex_contents, env, false /* decompress */);
   if (!s.ok()) {
     return s;
   }
@@ -312,7 +319,7 @@ Status FindMetaBlock(RandomAccessFileReader* file, uint64_t file_size,
   ReadOptions read_options;
   read_options.verify_checksums = false;
   s = ReadBlockContents(file, footer, read_options, metaindex_handle,
-                        &metaindex_contents, env, false);
+                        &metaindex_contents, env, false /* do decompression */);
   if (!s.ok()) {
     return s;
   }
@@ -341,7 +348,7 @@ Status ReadMetaBlock(RandomAccessFileReader* file, uint64_t file_size,
   ReadOptions read_options;
   read_options.verify_checksums = false;
   status = ReadBlockContents(file, footer, read_options, metaindex_handle,
-                             &metaindex_contents, env, false);
+                             &metaindex_contents, env, false /* decompress */);
   if (!status.ok()) {
     return status;
   }
@@ -361,7 +368,7 @@ Status ReadMetaBlock(RandomAccessFileReader* file, uint64_t file_size,
 
   // Reading metablock
   return ReadBlockContents(file, footer, read_options, block_handle, contents,
-                           env, false);
+                           env, false /* decompress */);
 }
 
 }  // namespace rocksdb

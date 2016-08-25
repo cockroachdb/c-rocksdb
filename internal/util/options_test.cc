@@ -38,53 +38,7 @@ DEFINE_bool(enable_print, false, "Print options generated to console.");
 
 namespace rocksdb {
 
-Options PrintAndGetOptions(size_t total_write_buffer_limit,
-                           int read_amplification_threshold,
-                           int write_amplification_threshold,
-                           uint64_t target_db_size = 68719476736) {
-  StderrLogger logger;
-
-  if (FLAGS_enable_print) {
-    printf("---- total_write_buffer_limit: %" ROCKSDB_PRIszt
-           " "
-           "read_amplification_threshold: %d write_amplification_threshold: %d "
-           "target_db_size %" PRIu64 " ----\n",
-           total_write_buffer_limit, read_amplification_threshold,
-           write_amplification_threshold, target_db_size);
-  }
-
-  Options options =
-      GetOptions(total_write_buffer_limit, read_amplification_threshold,
-                 write_amplification_threshold, target_db_size);
-  if (FLAGS_enable_print) {
-    options.Dump(&logger);
-    printf("-------------------------------------\n\n\n");
-  }
-  return options;
-}
-
 class OptionsTest : public testing::Test {};
-
-TEST_F(OptionsTest, LooseCondition) {
-  Options options;
-  PrintAndGetOptions(static_cast<size_t>(10) * 1024 * 1024 * 1024, 100, 100);
-
-  // Less mem table memory budget
-  PrintAndGetOptions(32 * 1024 * 1024, 100, 100);
-
-  // Tight read amplification
-  options = PrintAndGetOptions(128 * 1024 * 1024, 8, 100);
-  ASSERT_EQ(options.compaction_style, kCompactionStyleLevel);
-
-#ifndef ROCKSDB_LITE  // Universal compaction is not supported in ROCKSDB_LITE
-  // Tight write amplification
-  options = PrintAndGetOptions(128 * 1024 * 1024, 64, 10);
-  ASSERT_EQ(options.compaction_style, kCompactionStyleUniversal);
-#endif  // !ROCKSDB_LITE
-
-  // Both tight amplifications
-  PrintAndGetOptions(128 * 1024 * 1024, 4, 8);
-}
 
 #ifndef ROCKSDB_LITE  // GetOptionsFromMap is not supported in ROCKSDB_LITE
 TEST_F(OptionsTest, GetOptionsFromMapTest) {
@@ -103,6 +57,7 @@ TEST_F(OptionsTest, GetOptionsFromMapTest) {
        "kLZ4HCCompression:"
        "kXpressCompression:"
        "kZSTDNotFinalCompression"},
+      {"bottommost_compression", "kLZ4Compression"},
       {"compression_opts", "4:5:6:7"},
       {"num_levels", "8"},
       {"level0_file_num_compaction_trigger", "8"},
@@ -202,6 +157,7 @@ TEST_F(OptionsTest, GetOptionsFromMapTest) {
   ASSERT_EQ(new_cf_opt.compression_opts.level, 5);
   ASSERT_EQ(new_cf_opt.compression_opts.strategy, 6);
   ASSERT_EQ(new_cf_opt.compression_opts.max_dict_bytes, 7);
+  ASSERT_EQ(new_cf_opt.bottommost_compression, kLZ4Compression);
   ASSERT_EQ(new_cf_opt.num_levels, 8);
   ASSERT_EQ(new_cf_opt.level0_file_num_compaction_trigger, 8);
   ASSERT_EQ(new_cf_opt.level0_slowdown_writes_trigger, 9);
@@ -608,6 +564,7 @@ TEST_F(OptionsTest, GetOptionsFromStringTest) {
   ASSERT_EQ(new_options.compression_opts.level, 5);
   ASSERT_EQ(new_options.compression_opts.strategy, 6);
   ASSERT_EQ(new_options.compression_opts.max_dict_bytes, 0);
+  ASSERT_EQ(new_options.bottommost_compression, kDisableCompressionOption);
   ASSERT_EQ(new_options.write_buffer_size, 10U);
   ASSERT_EQ(new_options.max_write_buffer_number, 16);
   BlockBasedTableOptions new_block_based_table_options =
@@ -832,6 +789,28 @@ TEST_F(OptionsTest, StringToMapRandomTest) {
     ASSERT_TRUE(s.ok() || s.IsInvalidArgument());
     opts_map.clear();
   }
+}
+
+TEST_F(OptionsTest, GetStringFromCompressionType) {
+  std::string res;
+
+  ASSERT_OK(GetStringFromCompressionType(&res, kNoCompression));
+  ASSERT_EQ(res, "kNoCompression");
+
+  ASSERT_OK(GetStringFromCompressionType(&res, kSnappyCompression));
+  ASSERT_EQ(res, "kSnappyCompression");
+
+  ASSERT_OK(GetStringFromCompressionType(&res, kDisableCompressionOption));
+  ASSERT_EQ(res, "kDisableCompressionOption");
+
+  ASSERT_OK(GetStringFromCompressionType(&res, kLZ4Compression));
+  ASSERT_EQ(res, "kLZ4Compression");
+
+  ASSERT_OK(GetStringFromCompressionType(&res, kZlibCompression));
+  ASSERT_EQ(res, "kZlibCompression");
+
+  ASSERT_NOK(
+      GetStringFromCompressionType(&res, static_cast<CompressionType>(-10)));
 }
 #endif  // !ROCKSDB_LITE
 
