@@ -75,15 +75,13 @@ struct ImmutableCFOptions {
 
   bool purge_redundant_kvs_while_flush;
 
-  uint32_t min_partial_merge_operands;
-
   bool disable_data_sync;
 
   bool use_fsync;
 
-  CompressionType compression;
-
   std::vector<CompressionType> compression_per_level;
+
+  CompressionType bottommost_compression;
 
   CompressionOptions compression_opts;
 

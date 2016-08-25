@@ -61,11 +61,10 @@ ImmutableCFOptions::ImmutableCFOptions(const Options& options)
       advise_random_on_open(options.advise_random_on_open),
       bloom_locality(options.bloom_locality),
       purge_redundant_kvs_while_flush(options.purge_redundant_kvs_while_flush),
-      min_partial_merge_operands(options.min_partial_merge_operands),
       disable_data_sync(options.disableDataSync),
       use_fsync(options.use_fsync),
-      compression(options.compression),
       compression_per_level(options.compression_per_level),
+      bottommost_compression(options.bottommost_compression),
       compression_opts(options.compression_opts),
       level_compaction_dynamic_level_bytes(
           options.level_compaction_dynamic_level_bytes),
@@ -88,6 +87,7 @@ ColumnFamilyOptions::ColumnFamilyOptions()
       min_write_buffer_number_to_merge(1),
       max_write_buffer_number_to_maintain(0),
       compression(Snappy_Supported() ? kSnappyCompression : kNoCompression),
+      bottommost_compression(kDisableCompressionOption),
       prefix_extractor(nullptr),
       num_levels(7),
       level0_file_num_compaction_trigger(4),
@@ -146,6 +146,7 @@ ColumnFamilyOptions::ColumnFamilyOptions(const Options& options)
           options.max_write_buffer_number_to_maintain),
       compression(options.compression),
       compression_per_level(options.compression_per_level),
+      bottommost_compression(options.bottommost_compression),
       compression_opts(options.compression_opts),
       prefix_extractor(options.prefix_extractor),
       num_levels(options.num_levels),
@@ -494,6 +495,10 @@ void ColumnFamilyOptions::Dump(Logger* log) const {
       Header(log, "         Options.compression: %s",
           CompressionTypeToString(compression).c_str());
     }
+    Header(log, "                 Options.bottommost_compression: %s",
+           bottommost_compression == kDisableCompressionOption
+               ? "Disabled"
+               : CompressionTypeToString(bottommost_compression).c_str());
     Header(log, "      Options.prefix_extractor: %s",
         prefix_extractor == nullptr ? "nullptr" : prefix_extractor->Name());
     Header(log, "            Options.num_levels: %d", num_levels);

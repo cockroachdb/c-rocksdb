@@ -63,7 +63,6 @@ LIB_SOURCES =                                                   \
   table/block_based_table_reader.cc                             \
   table/block_builder.cc                                        \
   table/block.cc                                                \
-  table/block_hash_index.cc                                     \
   table/block_prefix_index.cc                                   \
   table/bloom_block.cc                                          \
   table/cuckoo_table_builder.cc                                 \
@@ -82,6 +81,7 @@ LIB_SOURCES =                                                   \
   table/plain_table_index.cc                                    \
   table/plain_table_key_coding.cc                               \
   table/plain_table_reader.cc                                   \
+  table/persistent_cache_helper.cc                              \
   table/table_properties.cc                                     \
   table/two_level_iterator.cc                                   \
   tools/dump/db_dump_tool.cc                                    \
@@ -97,12 +97,13 @@ LIB_SOURCES =                                                   \
   util/delete_scheduler.cc                                      \
   util/dynamic_bloom.cc                                         \
   util/env.cc                                                   \
+  util/env_chroot.cc                                            \
   util/env_hdfs.cc                                              \
   util/env_posix.cc                                             \
   util/io_posix.cc                                              \
-  util/thread_posix.cc                                          \
+  util/threadpool.cc                                            \
   util/transaction_test_util.cc                                 \
-  util/sst_file_manager_impl.cc                                     \
+  util/sst_file_manager_impl.cc                                 \
   util/file_util.cc                                             \
   util/file_reader_writer.cc                                    \
   util/filter_policy.cc                                         \
@@ -119,16 +120,21 @@ LIB_SOURCES =                                                   \
   utilities/document/json_document_builder.cc                   \
   utilities/document/json_document.cc                           \
   utilities/env_mirror.cc                                       \
+  utilities/env_registry.cc                                     \
   utilities/flashcache/flashcache.cc                            \
   utilities/geodb/geodb_impl.cc                                 \
   utilities/leveldb_options/leveldb_options.cc                  \
   utilities/memory/memory_util.cc                               \
   utilities/merge_operators/put.cc                              \
+  utilities/merge_operators/max.cc                              \
   utilities/merge_operators/string_append/stringappend2.cc      \
   utilities/merge_operators/string_append/stringappend.cc       \
   utilities/merge_operators/uint64add.cc                        \
   utilities/options/options_util.cc                             \
+  utilities/persistent_cache/persistent_cache_tier.cc           \
+  utilities/persistent_cache/volatile_tier_impl.cc              \
   utilities/redis/redis_lists.cc                                \
+  utilities/simulator_cache/sim_cache.cc                        \
   utilities/spatialdb/spatial_db.cc                             \
   utilities/table_properties_collectors/compact_on_deletion_collector.cc \
   utilities/transactions/optimistic_transaction_impl.cc         \
@@ -149,7 +155,6 @@ LIB_SOURCES =                                                   \
   util/murmurhash.cc                                            \
   util/mutable_cf_options.cc                                    \
   util/options.cc                                               \
-  util/options_builder.cc                                       \
   util/options_helper.cc                                        \
   util/options_parser.cc                                        \
   util/options_sanity_check.cc                                  \
@@ -179,7 +184,8 @@ TOOL_SOURCES = \
 
 MOCK_SOURCES = \
   table/mock_table.cc \
-  util/mock_env.cc
+  util/mock_env.cc \
+  util/fault_injection_test_env.cc
 
 BENCH_SOURCES = \
   tools/db_bench_tool.cc
@@ -199,6 +205,7 @@ TEST_BENCH_SOURCES =                                                    \
   db/db_iter_test.cc                                                    \
   db/db_test.cc                                                         \
 	db/db_block_cache_test.cc																							\
+  db/db_io_failure_test.cc                                              \
   db/db_bloom_filter_test.cc                                            \
   db/db_compaction_filter_test.cc                                       \
   db/db_compaction_test.cc                                              \
@@ -237,7 +244,6 @@ TEST_BENCH_SOURCES =                                                    \
   db/write_controller_test.cc                                           \
   db/write_callback_test.cc                                             \
   table/block_based_filter_block_test.cc                                \
-  table/block_hash_index_test.cc                                        \
   table/block_test.cc                                                   \
   table/cuckoo_table_builder_test.cc                                    \
   table/cuckoo_table_reader_test.cc                                     \
@@ -245,6 +251,7 @@ TEST_BENCH_SOURCES =                                                    \
   table/merger_test.cc                                                  \
   table/table_reader_bench.cc                                           \
   table/table_test.cc                                                   \
+  tools/db_bench_tool_test.cc                                           \
   tools/db_sanity_test.cc                                               \
   tools/ldb_cmd_test.cc                                                 \
   tools/reduce_levels_test.cc                                           \
@@ -257,6 +264,7 @@ TEST_BENCH_SOURCES =                                                    \
   util/coding_test.cc                                                   \
   util/crc32c_test.cc                                                   \
   util/dynamic_bloom_test.cc                                            \
+  util/env_basic_test.cc                                                \
   util/env_test.cc                                                      \
   util/filelock_test.cc                                                 \
   util/histogram_test.cc                                                \
@@ -264,11 +272,13 @@ TEST_BENCH_SOURCES =                                                    \
   utilities/checkpoint/checkpoint_test.cc                               \
   utilities/document/document_db_test.cc                                \
   utilities/document/json_document_test.cc                              \
+  utilities/env_registry_test.cc                                        \
   utilities/geodb/geodb_test.cc                                         \
   utilities/memory/memory_test.cc                                       \
   utilities/merge_operators/string_append/stringappend_test.cc          \
   utilities/options/options_util_test.cc                                \
   utilities/redis/redis_lists_test.cc                                   \
+  utilities/simulator_cache/sim_cache_test.cc                           \
   utilities/spatialdb/spatial_db_test.cc                                \
   utilities/table_properties_collectors/compact_on_deletion_collector_test.cc  \
   utilities/transactions/optimistic_transaction_test.cc                 \
@@ -277,7 +287,6 @@ TEST_BENCH_SOURCES =                                                    \
   utilities/write_batch_with_index/write_batch_with_index_test.cc       \
 	util/iostats_context_test.cc																					\
   util/log_write_bench.cc                                               \
-  util/memenv_test.cc                                                   \
   util/mock_env_test.cc                                                 \
   util/options_test.cc                                                  \
   util/event_logger_test.cc                                             \

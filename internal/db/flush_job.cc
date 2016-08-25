@@ -197,6 +197,7 @@ Status FlushJob::Run(FileMetaData* file_meta) {
     stream << vstorage->NumLevelFiles(level);
   }
   stream.EndArray();
+  stream << "immutable_memtables" << cfd_->imm()->NumNotFlushed();
 
   if (measure_io_stats_) {
     if (prev_perf_level != PerfLevel::kEnableTime) {
@@ -264,10 +265,10 @@ Status FlushJob::WriteLevel0Table(const autovector<MemTable*>& mems,
       TEST_SYNC_POINT_CALLBACK("FlushJob::WriteLevel0Table:output_compression",
                                &output_compression_);
       s = BuildTable(
-          dbname_, db_options_.env, *cfd_->ioptions(), env_options_,
-          cfd_->table_cache(), iter.get(), meta, cfd_->internal_comparator(),
-          cfd_->int_tbl_prop_collector_factories(), cfd_->GetID(),
-          cfd_->GetName(), existing_snapshots_,
+          dbname_, db_options_.env, *cfd_->ioptions(), mutable_cf_options_,
+          env_options_, cfd_->table_cache(), iter.get(), meta,
+          cfd_->internal_comparator(), cfd_->int_tbl_prop_collector_factories(),
+          cfd_->GetID(), cfd_->GetName(), existing_snapshots_,
           earliest_write_conflict_snapshot_, output_compression_,
           cfd_->ioptions()->compression_opts,
           mutable_cf_options_.paranoid_file_checks, cfd_->internal_stats(),
