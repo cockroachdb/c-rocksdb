@@ -44,6 +44,7 @@ struct TablePropertiesNames {
   static const std::string kComparator;
   static const std::string kMergeOperator;
   static const std::string kPropertyCollectors;
+  static const std::string kCompression;
 };
 
 extern const std::string kPropertiesBlock;
@@ -170,6 +171,9 @@ struct TableProperties {
   // {collector_name[1]},{collector_name[2]},{collector_name[3]} ..
   std::string property_collectors_names;
 
+  // The compression algo used to compress the SST files.
+  std::string compression_name;
+
   // user collected properties
   UserCollectedProperties user_collected_properties;
   UserCollectedProperties readable_properties;
@@ -189,5 +193,7 @@ struct TableProperties {
 // itself. Especially some properties regarding to the internal keys (which
 // is unknown to `table`).
 extern uint64_t GetDeletedKeys(const UserCollectedProperties& props);
+extern uint64_t GetMergeOperands(const UserCollectedProperties& props,
+                                 bool* property_present);
 
 }  // namespace rocksdb

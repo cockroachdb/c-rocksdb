@@ -12,6 +12,7 @@
 #endif
 
 #include <inttypes.h>
+#include <iostream>
 #include <map>
 #include <sstream>
 #include <vector>
@@ -25,6 +26,7 @@
 #include "rocksdb/slice_transform.h"
 #include "rocksdb/status.h"
 #include "rocksdb/table_properties.h"
+#include "rocksdb/utilities/ldb_cmd.h"
 #include "table/block.h"
 #include "table/block_based_table_builder.h"
 #include "table/block_based_table_factory.h"
@@ -32,7 +34,7 @@
 #include "table/format.h"
 #include "table/meta_blocks.h"
 #include "table/plain_table_factory.h"
-#include "tools/ldb_cmd.h"
+#include "table/table_reader.h"
 #include "util/random.h"
 #include "util/compression.h"
 
@@ -555,6 +557,15 @@ int SSTDumpTool::Run(int argc, char** argv) {
         fprintf(stdout, "# deleted keys: %" PRIu64 "\n",
                 rocksdb::GetDeletedKeys(
                     table_properties->user_collected_properties));
+
+        bool property_present;
+        uint64_t merge_operands = rocksdb::GetMergeOperands(
+            table_properties->user_collected_properties, &property_present);
+        if (property_present) {
+          fprintf(stdout, "  # merge operands: %" PRIu64 "\n", merge_operands);
+        } else {
+          fprintf(stdout, "  # merge operands: UNKNOWN\n");
+        }
       }
     }
   }

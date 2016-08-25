@@ -691,6 +691,8 @@ extern ROCKSDB_LIBRARY_API void rocksdb_options_set_inplace_update_support(
     rocksdb_options_t*, unsigned char);
 extern ROCKSDB_LIBRARY_API void rocksdb_options_set_inplace_update_num_locks(
     rocksdb_options_t*, size_t);
+extern ROCKSDB_LIBRARY_API void rocksdb_options_set_report_bg_io_stats(
+    rocksdb_options_t*, int);
 
 enum {
   rocksdb_no_compression = 0,
@@ -817,6 +819,8 @@ extern ROCKSDB_LIBRARY_API void rocksdb_readoptions_set_read_tier(
     rocksdb_readoptions_t*, int);
 extern ROCKSDB_LIBRARY_API void rocksdb_readoptions_set_tailing(
     rocksdb_readoptions_t*, unsigned char);
+extern ROCKSDB_LIBRARY_API void rocksdb_readoptions_set_readahead_size(
+    rocksdb_readoptions_t*, size_t);
 
 /* Write options */
 
@@ -843,6 +847,8 @@ extern ROCKSDB_LIBRARY_API void rocksdb_flushoptions_set_wait(
 extern ROCKSDB_LIBRARY_API rocksdb_cache_t* rocksdb_cache_create_lru(
     size_t capacity);
 extern ROCKSDB_LIBRARY_API void rocksdb_cache_destroy(rocksdb_cache_t* cache);
+extern ROCKSDB_LIBRARY_API void rocksdb_cache_set_capacity(
+    rocksdb_cache_t* cache, size_t capacity);
 
 /* Env */
 
@@ -931,6 +937,15 @@ extern ROCKSDB_LIBRARY_API void rocksdb_livefiles_destroy(
 extern ROCKSDB_LIBRARY_API void rocksdb_get_options_from_string(
     const rocksdb_options_t* base_options, const char* opts_str,
     rocksdb_options_t* new_options, char** errptr);
+
+extern ROCKSDB_LIBRARY_API void rocksdb_delete_file_in_range(
+    rocksdb_t* db, const char* start_key, size_t start_key_len,
+    const char* limit_key, size_t limit_key_len, char** errptr);
+
+extern ROCKSDB_LIBRARY_API void rocksdb_delete_file_in_range_cf(
+    rocksdb_t* db, rocksdb_column_family_handle_t* column_family,
+    const char* start_key, size_t start_key_len, const char* limit_key,
+    size_t limit_key_len, char** errptr);
 
 // referring to convention (3), this should be used by client
 // to free memory that was malloc()ed

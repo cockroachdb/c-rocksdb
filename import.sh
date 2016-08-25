@@ -4,10 +4,14 @@ set -eu
 
 rm -rf internal/*
 find . -type l -not -path './.git/*' | xargs rm
-curl -sL https://github.com/facebook/rocksdb/archive/v4.8.tar.gz | tar zxf - -C internal --strip-components=1
+curl -sL https://github.com/facebook/rocksdb/archive/v4.9.tar.gz | tar zxf - -C internal --strip-components=1
 make -C internal util/build_version.cc
 patch -p1 < gitignore.patch
-patch -p1 < internal.patch
+# Downcase some windows-only includes for compatibility with mingw64.
+grep -lRF '<Windows.h>' internal | xargs sed -i~ 's!<Windows.h>!<windows.h>!g'
+grep -lRF '<Rpc.h>' internal | xargs sed -i~ 's!<Rpc.h>!<rpc.h>!g'
+# Avoid MSVC-only extensions for compatibility with mingw64.
+grep -lRF 'i64;' internal | xargs sed -i~ 's!i64;!LL;!g'
 
 # symlink so cgo compiles them
 for source_file in $(make sources | grep -vE '(/redis/|(_(cmd|tool)|(env|port)_[a-z]+).cc$)'); do

@@ -271,9 +271,9 @@ TESTS = \
 	db_tailing_iter_test \
 	db_universal_compaction_test \
 	db_wal_test \
+	db_io_failure_test \
 	db_properties_test \
 	db_table_properties_test \
-	block_hash_index_test \
 	autovector_test \
 	column_family_test \
 	table_properties_collector_test \
@@ -290,6 +290,7 @@ TESTS = \
 	crc32c_test \
 	slice_transform_test \
 	dbformat_test \
+	env_basic_test \
 	env_test \
 	fault_injection_test \
 	filelock_test \
@@ -297,17 +298,18 @@ TESTS = \
 	file_reader_writer_test \
 	block_based_filter_block_test \
 	full_filter_block_test \
+	hash_table_test \
 	histogram_test \
 	inlineskiplist_test \
 	log_test \
 	manual_compaction_test \
-	memenv_test \
 	mock_env_test \
 	memtable_list_test \
 	merge_helper_test \
 	memory_test \
 	merge_test \
 	merger_test \
+	util_merge_operators_test \
 	options_file_test \
 	redis_test \
 	reduce_levels_test \
@@ -320,6 +322,7 @@ TESTS = \
 	backupable_db_test \
 	document_db_test \
 	json_document_test \
+	sim_cache_test \
 	spatial_db_test \
 	version_edit_test \
 	version_set_test \
@@ -358,7 +361,8 @@ TESTS = \
 	compaction_job_stats_test \
 	transaction_test \
 	ldb_cmd_test \
-	iostats_context_test
+	iostats_context_test \
+	persistent_cache_test \
 
 PARALLEL_TEST = \
 	backupable_db_test \
@@ -391,6 +395,9 @@ TOOLS = \
 	rocksdb_dump \
 	rocksdb_undump
 
+TEST_LIBS = \
+	librocksdb_env_basic_test.a
+
 # TODO: add back forward_iterator_bench, after making it build in all environemnts.
 BENCHMARKS = db_bench table_reader_bench cache_bench memtablerep_bench
 
@@ -404,6 +411,7 @@ else
 endif
 endif
 LIBRARY = ${LIBNAME}.a
+TOOLS_LIBRARY = ${LIBNAME}_tools.a
 
 ROCKSDB_MAJOR = $(shell egrep "ROCKSDB_MAJOR.[0-9]" include/rocksdb/version.h | cut -d ' ' -f 3)
 ROCKSDB_MINOR = $(shell egrep "ROCKSDB_MINOR.[0-9]" include/rocksdb/version.h | cut -d ' ' -f 3)
@@ -455,16 +463,20 @@ endif  # PLATFORM_SHARED_EXT
 .PHONY: blackbox_crash_test check clean coverage crash_test ldb_tests package \
 	release tags valgrind_check whitebox_crash_test format static_lib shared_lib all \
 	dbg rocksdbjavastatic rocksdbjava install install-static install-shared uninstall \
-	analyze tools
+	analyze tools tools_lib
 
 
-all: $(LIBRARY) $(BENCHMARKS) tools $(TESTS)
+all: $(LIBRARY) $(BENCHMARKS) tools tools_lib test_libs $(TESTS)
 
 static_lib: $(LIBRARY)
 
 shared_lib: $(SHARED)
 
 tools: $(TOOLS)
+
+tools_lib: $(TOOLS_LIBRARY)
+
+test_libs: $(TEST_LIBS)
 
 dbg: $(LIBRARY) $(BENCHMARKS) tools $(TESTS)
 
@@ -795,6 +807,14 @@ $(LIBRARY): $(LIBOBJECTS)
 	$(AM_V_AR)rm -f $@
 	$(AM_V_at)$(AR) $(ARFLAGS) $@ $(LIBOBJECTS)
 
+$(TOOLS_LIBRARY): $(BENCH_SOURCES:.cc=.o) $(TOOL_SOURCES:.cc=.o) $(LIB_SOURCES:.cc=.o) $(TESTUTIL)
+	$(AM_V_AR)rm -f $@
+	$(AM_V_at)$(AR) $(ARFLAGS) $@ $^
+
+librocksdb_env_basic_test.a: util/env_basic_test.o $(LIBOBJECTS) $(TESTHARNESS)
+	$(AM_V_AR)rm -f $@
+	$(AM_V_at)$(AR) $(ARFLAGS) $@ $^
+
 db_bench: tools/db_bench.o $(BENCHTOOLOBJECTS)
 	$(AM_LINK)
 
@@ -802,9 +822,6 @@ cache_bench: util/cache_bench.o $(LIBOBJECTS) $(TESTUTIL)
 	$(AM_LINK)
 
 memtablerep_bench: db/memtablerep_bench.o $(LIBOBJECTS) $(TESTUTIL)
-	$(AM_LINK)
-
-block_hash_index_test: table/block_hash_index_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 db_stress: tools/db_stress.o $(LIBOBJECTS) $(TESTUTIL)
@@ -850,6 +867,9 @@ stringappend_test: utilities/merge_operators/string_append/stringappend_test.o $
 	$(AM_LINK)
 
 redis_test: utilities/redis/redis_lists_test.o $(LIBOBJECTS) $(TESTHARNESS)
+	$(AM_LINK)
+
+hash_table_test: utilities/persistent_cache/hash_table_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 histogram_test: util/histogram_test.o $(LIBOBJECTS) $(TESTHARNESS)
@@ -912,6 +932,9 @@ db_universal_compaction_test: db/db_universal_compaction_test.o db/db_test_util.
 db_wal_test: db/db_wal_test.o db/db_test_util.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
+db_io_failure_test: db/db_io_failure_test.o db/db_test_util.o $(LIBOBJECTS) $(TESTHARNESS)
+	$(AM_LINK)
+
 db_properties_test: db/db_properties_test.o db/db_test_util.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
@@ -948,10 +971,16 @@ document_db_test: utilities/document/document_db_test.o $(LIBOBJECTS) $(TESTHARN
 json_document_test: utilities/document/json_document_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
+sim_cache_test: utilities/simulator_cache/sim_cache_test.o db/db_test_util.o $(LIBOBJECTS) $(TESTHARNESS)
+	$(AM_LINK)
+
 spatial_db_test: utilities/spatialdb/spatial_db_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 env_mirror_test: utilities/env_mirror_test.o $(LIBOBJECTS) $(TESTHARNESS)
+	$(AM_LINK)
+
+env_registry_test: utilities/env_registry_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 ttl_test: utilities/ttl/ttl_test.o $(LIBOBJECTS) $(TESTHARNESS)
@@ -979,6 +1008,9 @@ wal_manager_test: db/wal_manager_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 dbformat_test: db/dbformat_test.o $(LIBOBJECTS) $(TESTHARNESS)
+	$(AM_LINK)
+
+env_basic_test: util/env_basic_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 env_test: util/env_test.o $(LIBOBJECTS) $(TESTHARNESS)
@@ -1056,6 +1088,9 @@ merge_test: db/merge_test.o $(LIBOBJECTS) $(TESTHARNESS)
 merger_test: table/merger_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
+util_merge_operators_test: utilities/util_merge_operators_test.o $(LIBOBJECTS) $(TESTHARNESS)
+	$(AM_LINK)
+
 options_file_test: db/options_file_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
@@ -1098,13 +1133,13 @@ options_settable_test: util/options_settable_test.o $(LIBOBJECTS) $(TESTHARNESS)
 options_util_test: utilities/options/options_util_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
+db_bench_tool_test: tools/db_bench_tool_test.o $(BENCHTOOLOBJECTS) $(TESTHARNESS)
+	$(AM_LINK)
+
 event_logger_test: util/event_logger_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 sst_dump_test: tools/sst_dump_test.o $(LIBOBJECTS) $(TESTHARNESS)
-	$(AM_LINK)
-
-memenv_test : util/memenv_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 optimistic_transaction_test: utilities/transactions/optimistic_transaction_test.o $(LIBOBJECTS) $(TESTHARNESS)
@@ -1148,6 +1183,9 @@ ldb: tools/ldb.o $(LIBOBJECTS)
 
 iostats_context_test: util/iostats_context_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_V_CCLD)$(CXX) $^ $(EXEC_LDFLAGS) -o $@ $(LDFLAGS)
+
+persistent_cache_test: utilities/persistent_cache/persistent_cache_test.o  db/db_test_util.o $(LIBOBJECTS) $(TESTHARNESS)
+	$(AM_LINK)
 
 #-------------------------------------------------
 # make install related stuff

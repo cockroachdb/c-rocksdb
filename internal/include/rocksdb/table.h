@@ -21,15 +21,16 @@
 #include <unordered_map>
 
 #include "rocksdb/env.h"
+#include "rocksdb/immutable_options.h"
 #include "rocksdb/iterator.h"
 #include "rocksdb/options.h"
-#include "rocksdb/immutable_options.h"
 #include "rocksdb/status.h"
 
 namespace rocksdb {
 
 // -- Block-based Table
 class FlushBlockPolicyFactory;
+class PersistentCache;
 class RandomAccessFile;
 struct TableReaderOptions;
 struct TableBuilderOptions;
@@ -83,10 +84,8 @@ struct BlockBasedTableOptions {
 
   IndexType index_type = kBinarySearch;
 
-  // Influence the behavior when kHashSearch is used.
-  // if false, stores a precise prefix to block range mapping
-  // if true, does not store prefix and allows prefix hash collision
-  // (less memory consumption)
+  // This option is now deprecated. No matter what value it is set to,
+  // it will behave as if hash_index_allow_collision=true.
   bool hash_index_allow_collision = true;
 
   // Use the specified checksum type. Newly created table files will be
@@ -102,6 +101,10 @@ struct BlockBasedTableOptions {
   // If non-NULL use the specified cache for blocks.
   // If NULL, rocksdb will automatically create and use an 8MB internal cache.
   std::shared_ptr<Cache> block_cache = nullptr;
+
+  // If non-NULL use the specified cache for pages read from device
+  // IF NULL, no page cache is used
+  std::shared_ptr<PersistentCache> persistent_cache = nullptr;
 
   // If non-NULL use the specified cache for compressed blocks.
   // If NULL, rocksdb will not use a compressed block cache.
