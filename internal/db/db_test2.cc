@@ -7,8 +7,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 #include <cstdlib>
+
 #include "db/db_test_util.h"
 #include "port/stack_trace.h"
+#include "rocksdb/persistent_cache.h"
 #include "rocksdb/wal_filter.h"
 
 namespace rocksdb {
@@ -800,6 +802,170 @@ TEST_F(DBTest2, PresetCompressionDict) {
     }
   }
 }
+
+class CompactionCompressionListener : public EventListener {
+ public:
+  explicit CompactionCompressionListener(Options* db_options)
+      : db_options_(db_options) {}
+
+  void OnCompactionCompleted(DB* db, const CompactionJobInfo& ci) override {
+    // Figure out last level with files
+    int bottommost_level = 0;
+    for (int level = 0; level < db->NumberLevels(); level++) {
+      std::string files_at_level;
+      ASSERT_TRUE(
+          db->GetProperty("rocksdb.num-files-at-level" + NumberToString(level),
+                          &files_at_level));
+      if (files_at_level != "0") {
+        bottommost_level = level;
+      }
+    }
+
+    if (db_options_->bottommost_compression != kDisableCompressionOption &&
+        ci.output_level == bottommost_level && ci.output_level >= 2) {
+      ASSERT_EQ(ci.compression, db_options_->bottommost_compression);
+    } else if (db_options_->compression_per_level.size() != 0) {
+      ASSERT_EQ(ci.compression,
+                db_options_->compression_per_level[ci.output_level]);
+    } else {
+      ASSERT_EQ(ci.compression, db_options_->compression);
+    }
+    max_level_checked = std::max(max_level_checked, ci.output_level);
+  }
+
+  int max_level_checked = 0;
+  const Options* db_options_;
+};
+
+TEST_F(DBTest2, CompressionOptions) {
+  if (!Zlib_Supported() || !Snappy_Supported()) {
+    return;
+  }
+
+  Options options = CurrentOptions();
+  options.level0_file_num_compaction_trigger = 2;
+  options.max_bytes_for_level_base = 100;
+  options.max_bytes_for_level_multiplier = 2;
+  options.num_levels = 7;
+  options.max_background_compactions = 1;
+  options.base_background_compactions = 1;
+
+  CompactionCompressionListener* listener =
+      new CompactionCompressionListener(&options);
+  options.listeners.emplace_back(listener);
+
+  const int kKeySize = 5;
+  const int kValSize = 20;
+  Random rnd(301);
+
+  for (int iter = 0; iter <= 2; iter++) {
+    listener->max_level_checked = 0;
+
+    if (iter == 0) {
+      // Use different compression algorithms for different levels but
+      // always use Zlib for bottommost level
+      options.compression_per_level = {kNoCompression,     kNoCompression,
+                                       kNoCompression,     kSnappyCompression,
+                                       kSnappyCompression, kSnappyCompression,
+                                       kZlibCompression};
+      options.compression = kNoCompression;
+      options.bottommost_compression = kZlibCompression;
+    } else if (iter == 1) {
+      // Use Snappy except for bottommost level use ZLib
+      options.compression_per_level = {};
+      options.compression = kSnappyCompression;
+      options.bottommost_compression = kZlibCompression;
+    } else if (iter == 2) {
+      // Use Snappy everywhere
+      options.compression_per_level = {};
+      options.compression = kSnappyCompression;
+      options.bottommost_compression = kDisableCompressionOption;
+    }
+
+    DestroyAndReopen(options);
+    // Write 10 random files
+    for (int i = 0; i < 10; i++) {
+      for (int j = 0; j < 5; j++) {
+        ASSERT_OK(
+            Put(RandomString(&rnd, kKeySize), RandomString(&rnd, kValSize)));
+      }
+      ASSERT_OK(Flush());
+      dbfull()->TEST_WaitForCompact();
+    }
+
+    // Make sure that we wrote enough to check all 7 levels
+    ASSERT_EQ(listener->max_level_checked, 6);
+  }
+}
+
+class CompactionStallTestListener : public EventListener {
+ public:
+  CompactionStallTestListener() : compacted_files_cnt_(0) {}
+
+  void OnCompactionCompleted(DB* db, const CompactionJobInfo& ci) override {
+    ASSERT_EQ(ci.cf_name, "default");
+    ASSERT_EQ(ci.base_input_level, 0);
+    ASSERT_EQ(ci.compaction_reason, CompactionReason::kLevelL0FilesNum);
+    compacted_files_cnt_ += ci.input_files.size();
+  }
+  std::atomic<size_t> compacted_files_cnt_;
+};
+
+TEST_F(DBTest2, CompactionStall) {
+  rocksdb::SyncPoint::GetInstance()->LoadDependency(
+      {{"DBImpl::BGWorkCompaction", "DBTest2::CompactionStall:0"},
+       {"DBImpl::BGWorkCompaction", "DBTest2::CompactionStall:1"},
+       {"DBTest2::CompactionStall:2",
+        "DBImpl::NotifyOnCompactionCompleted::UnlockMutex"}});
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
+
+  Options options = CurrentOptions();
+  options.level0_file_num_compaction_trigger = 4;
+  options.max_background_compactions = 40;
+  CompactionStallTestListener* listener = new CompactionStallTestListener();
+  options.listeners.emplace_back(listener);
+  DestroyAndReopen(options);
+
+  Random rnd(301);
+
+  // 4 Files in L0
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 10; j++) {
+      ASSERT_OK(Put(RandomString(&rnd, 10), RandomString(&rnd, 10)));
+    }
+    ASSERT_OK(Flush());
+  }
+
+  // Wait for compaction to be triggered
+  TEST_SYNC_POINT("DBTest2::CompactionStall:0");
+
+  // Clear "DBImpl::BGWorkCompaction" SYNC_POINT since we want to hold it again
+  // at DBTest2::CompactionStall::1
+  rocksdb::SyncPoint::GetInstance()->ClearTrace();
+
+  // Another 6 L0 files to trigger compaction again
+  for (int i = 0; i < 6; i++) {
+    for (int j = 0; j < 10; j++) {
+      ASSERT_OK(Put(RandomString(&rnd, 10), RandomString(&rnd, 10)));
+    }
+    ASSERT_OK(Flush());
+  }
+
+  // Wait for another compaction to be triggered
+  TEST_SYNC_POINT("DBTest2::CompactionStall:1");
+
+  // Hold NotifyOnCompactionCompleted in the unlock mutex section
+  TEST_SYNC_POINT("DBTest2::CompactionStall:2");
+
+  dbfull()->TEST_WaitForCompact();
+  ASSERT_LT(NumTableFilesAtLevel(0),
+            options.level0_file_num_compaction_trigger);
+  ASSERT_GT(listener->compacted_files_cnt_.load(),
+            10 - options.level0_file_num_compaction_trigger);
+
+  rocksdb::SyncPoint::GetInstance()->DisableProcessing();
+}
+
 #endif  // ROCKSDB_LITE
 
 TEST_F(DBTest2, FirstSnapshotTest) {
@@ -929,7 +1095,131 @@ TEST_P(PinL0IndexAndFilterBlocksTest,
 
 INSTANTIATE_TEST_CASE_P(PinL0IndexAndFilterBlocksTest,
                         PinL0IndexAndFilterBlocksTest, ::testing::Bool());
+#ifndef ROCKSDB_LITE
+static void UniqueIdCallback(void* arg) {
+  int* result = reinterpret_cast<int*>(arg);
+  if (*result == -1) {
+    *result = 0;
+  }
 
+  rocksdb::SyncPoint::GetInstance()->ClearTrace();
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
+      "GetUniqueIdFromFile:FS_IOC_GETVERSION", UniqueIdCallback);
+}
+
+class MockPersistentCache : public PersistentCache {
+ public:
+  explicit MockPersistentCache(const bool is_compressed, const size_t max_size)
+      : is_compressed_(is_compressed), max_size_(max_size) {
+    rocksdb::SyncPoint::GetInstance()->EnableProcessing();
+    rocksdb::SyncPoint::GetInstance()->SetCallBack(
+        "GetUniqueIdFromFile:FS_IOC_GETVERSION", UniqueIdCallback);
+  }
+
+  virtual ~MockPersistentCache() {}
+
+  Status Insert(const Slice& page_key, const char* data,
+                const size_t size) override {
+    MutexLock _(&lock_);
+
+    if (size_ > max_size_) {
+      size_ -= data_.begin()->second.size();
+      data_.erase(data_.begin());
+    }
+
+    data_.insert(std::make_pair(page_key.ToString(), std::string(data, size)));
+    size_ += size;
+    return Status::OK();
+  }
+
+  Status Lookup(const Slice& page_key, std::unique_ptr<char[]>* data,
+                size_t* size) override {
+    MutexLock _(&lock_);
+    auto it = data_.find(page_key.ToString());
+    if (it == data_.end()) {
+      return Status::NotFound();
+    }
+
+    assert(page_key.ToString() == it->first);
+    data->reset(new char[it->second.size()]);
+    memcpy(data->get(), it->second.c_str(), it->second.size());
+    *size = it->second.size();
+    return Status::OK();
+  }
+
+  bool IsCompressed() override { return is_compressed_; }
+
+  port::Mutex lock_;
+  std::map<std::string, std::string> data_;
+  const bool is_compressed_ = true;
+  size_t size_ = 0;
+  const size_t max_size_ = 10 * 1024;  // 10KiB
+};
+
+TEST_F(DBTest2, PersistentCache) {
+  int num_iter = 80;
+
+  Options options;
+  options.write_buffer_size = 64 * 1024;  // small write buffer
+  options.statistics = rocksdb::CreateDBStatistics();
+  options = CurrentOptions(options);
+
+  auto bsizes = {/*no block cache*/ 0, /*1M*/ 1 * 1024 * 1024};
+  auto types = {/*compressed*/ 1, /*uncompressed*/ 0};
+  for (auto bsize : bsizes) {
+    for (auto type : types) {
+      BlockBasedTableOptions table_options;
+      table_options.persistent_cache.reset(
+          new MockPersistentCache(type, 10 * 1024));
+      table_options.no_block_cache = true;
+      table_options.block_cache = bsize ? NewLRUCache(bsize) : nullptr;
+      table_options.block_cache_compressed = nullptr;
+      options.table_factory.reset(NewBlockBasedTableFactory(table_options));
+
+      DestroyAndReopen(options);
+      CreateAndReopenWithCF({"pikachu"}, options);
+      // default column family doesn't have block cache
+      Options no_block_cache_opts;
+      no_block_cache_opts.statistics = options.statistics;
+      no_block_cache_opts = CurrentOptions(no_block_cache_opts);
+      BlockBasedTableOptions table_options_no_bc;
+      table_options_no_bc.no_block_cache = true;
+      no_block_cache_opts.table_factory.reset(
+          NewBlockBasedTableFactory(table_options_no_bc));
+      ReopenWithColumnFamilies(
+          {"default", "pikachu"},
+          std::vector<Options>({no_block_cache_opts, options}));
+
+      Random rnd(301);
+
+      // Write 8MB (80 values, each 100K)
+      ASSERT_EQ(NumTableFilesAtLevel(0, 1), 0);
+      std::vector<std::string> values;
+      std::string str;
+      for (int i = 0; i < num_iter; i++) {
+        if (i % 4 == 0) {  // high compression ratio
+          str = RandomString(&rnd, 1000);
+        }
+        values.push_back(str);
+        ASSERT_OK(Put(1, Key(i), values[i]));
+      }
+
+      // flush all data from memtable so that reads are from block cache
+      ASSERT_OK(Flush(1));
+
+      for (int i = 0; i < num_iter; i++) {
+        ASSERT_EQ(Get(1, Key(i)), values[i]);
+      }
+
+      auto hit = options.statistics->getTickerCount(PERSISTENT_CACHE_HIT);
+      auto miss = options.statistics->getTickerCount(PERSISTENT_CACHE_MISS);
+
+      ASSERT_GT(hit, 0);
+      ASSERT_GT(miss, 0);
+    }
+  }
+}
+#endif
 }  // namespace rocksdb
 
 int main(int argc, char** argv) {

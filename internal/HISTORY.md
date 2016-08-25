@@ -1,10 +1,23 @@
 # Rocksdb Change Log
+## Unreleased
+
+## 4.9.0 (6/9/2016)
+### Public API changes
+* Add bottommost_compression option, This option can be used to set a specific compression algorithm for the bottommost level (Last level containing files in the DB).
+* Introduce CompactionJobInfo::compression, This field state the compression algorithm used to generate the output files of the compaction.
+* Deprecate BlockBaseTableOptions.hash_index_allow_collision=false
+* Deprecate options builder (GetOptions()).
+
+### New Features
+* Introduce NewSimCache() in rocksdb/utilities/sim_cache.h. This function creates a block cache that is able to give simulation results (mainly hit rate) of simulating block behavior with a configurable cache size.
+
 ## 4.8.0 (5/2/2016)
 ### Public API Change
 * Allow preset compression dictionary for improved compression of block-based tables. This is supported for zlib, zstd, and lz4. The compression dictionary's size is configurable via CompressionOptions::max_dict_bytes.
 * Delete deprecated classes for creating backups (BackupableDB) and restoring from backups (RestoreBackupableDB). Now, BackupEngine should be used for creating backups, and BackupEngineReadOnly should be used for restorations. For more details, see https://github.com/facebook/rocksdb/wiki/How-to-backup-RocksDB%3F
 * Expose estimate of per-level compression ratio via DB property: "rocksdb.compression-ratio-at-levelN".
 * Added EventListener::OnTableFileCreationStarted. EventListener::OnTableFileCreated will be called on failure case. User can check creation status via TableFileCreationInfo::status.
+
 ### New Features
 * Add ReadOptions::readahead_size. If non-zero, NewIterator will create a new table reader which performs reads of the given size.
 
@@ -17,8 +30,9 @@
 ### Public API Changes
 * Change default of BlockBasedTableOptions.format_version to 2. It means default DB created by 4.6 or up cannot be opened by RocksDB version 3.9 or earlier.
 * Added strict_capacity_limit option to NewLRUCache. If the flag is set to true, insert to cache will fail if no enough capacity can be free. Signiture of Cache::Insert() is updated accordingly.
-* Tickers [NUMBER_DB_NEXT, NUMBER_DB_PREV, NUMBER_DB_NEXT_FOUND, NUMBER_DB_PREV_FOUND, ITER_BYTES_READ] are not updated immediately. The are updated when the Iterator is deleted.  
+* Tickers [NUMBER_DB_NEXT, NUMBER_DB_PREV, NUMBER_DB_NEXT_FOUND, NUMBER_DB_PREV_FOUND, ITER_BYTES_READ] are not updated immediately. The are updated when the Iterator is deleted.
 * Add monotonically increasing counter (DB property "rocksdb.current-super-version-number") that increments upon any change to the LSM tree.
+
 ### New Features
 * Add CompactionPri::kMinOverlappingRatio, a compaction picking mode friendly to write amplification.
 * Deprecate Iterator::IsKeyPinned() and replace it with Iterator::GetProperty() with prop_name="rocksdb.iterator.is.key.pinned"
@@ -32,7 +46,7 @@
 ### New Features
 * ldb tool now supports operations to non-default column families.
 * Add kPersistedTier to ReadTier.  This option allows Get and MultiGet to read only the persited data and skip mem-tables if writes were done with disableWAL = true.
-* Add DBOptions::sst_file_manager. Use NewSstFileManager() in include/rocksdb/sst_file_manager.h to create a SstFileManager that can be used to track the total size of SST files and control the SST files deletion rate.  
+* Add DBOptions::sst_file_manager. Use NewSstFileManager() in include/rocksdb/sst_file_manager.h to create a SstFileManager that can be used to track the total size of SST files and control the SST files deletion rate.
 
 ## 4.4.0 (1/14/2016)
 ### Public API Changes
