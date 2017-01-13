@@ -12,7 +12,11 @@
 #endif
 
 #ifdef ROCKSDB_MALLOC_USABLE_SIZE
+#ifdef OS_FREEBSD
+#include <malloc_np.h>
+#else
 #include <malloc.h>
+#endif
 #endif
 #include <sys/types.h>
 
@@ -206,14 +210,23 @@ TEST_P(EnvPosixTestWithParam, StartThread) {
 }
 
 TEST_P(EnvPosixTestWithParam, TwoPools) {
+  // Data structures to signal tasks to run.
+  port::Mutex mutex;
+  port::CondVar cv(&mutex);
+  bool should_start = false;
+
   class CB {
    public:
-    CB(const std::string& pool_name, int pool_size)
+    CB(const std::string& pool_name, int pool_size, port::Mutex* trigger_mu,
+       port::CondVar* trigger_cv, bool* _should_start)
         : mu_(),
           num_running_(0),
           num_finished_(0),
           pool_size_(pool_size),
-          pool_name_(pool_name) { }
+          pool_name_(pool_name),
+          trigger_mu_(trigger_mu),
+          trigger_cv_(trigger_cv),
+          should_start_(_should_start) {}
 
     static void Run(void* v) {
       CB* cb = reinterpret_cast<CB*>(v);
@@ -228,8 +241,12 @@ TEST_P(EnvPosixTestWithParam, TwoPools) {
         ASSERT_LE(num_running_, pool_size_.load());
       }
 
-      // sleep for 1 sec
-      Env::Default()->SleepForMicroseconds(1000000);
+      {
+        MutexLock l(trigger_mu_);
+        while (!(*should_start_)) {
+          trigger_cv_->Wait();
+        }
+      }
 
       {
         MutexLock l(&mu_);
@@ -254,14 +271,17 @@ TEST_P(EnvPosixTestWithParam, TwoPools) {
     int num_finished_;
     std::atomic<int> pool_size_;
     std::string pool_name_;
+    port::Mutex* trigger_mu_;
+    port::CondVar* trigger_cv_;
+    bool* should_start_;
   };
 
   const int kLowPoolSize = 2;
   const int kHighPoolSize = 4;
   const int kJobs = 8;
 
-  CB low_pool_job("low", kLowPoolSize);
-  CB high_pool_job("high", kHighPoolSize);
+  CB low_pool_job("low", kLowPoolSize, &mutex, &cv, &should_start);
+  CB high_pool_job("high", kHighPoolSize, &mutex, &cv, &should_start);
 
   env_->SetBackgroundThreads(kLowPoolSize);
   env_->SetBackgroundThreads(kHighPoolSize, Env::Priority::HIGH);
@@ -275,13 +295,30 @@ TEST_P(EnvPosixTestWithParam, TwoPools) {
     env_->Schedule(&CB::Run, &high_pool_job, Env::Priority::HIGH);
   }
   // Wait a short while for the jobs to be dispatched.
-  Env::Default()->SleepForMicroseconds(kDelayMicros);
+  int sleep_count = 0;
+  while ((unsigned int)(kJobs - kLowPoolSize) !=
+             env_->GetThreadPoolQueueLen(Env::Priority::LOW) ||
+         (unsigned int)(kJobs - kHighPoolSize) !=
+             env_->GetThreadPoolQueueLen(Env::Priority::HIGH)) {
+    env_->SleepForMicroseconds(kDelayMicros);
+    if (++sleep_count > 100) {
+      break;
+    }
+  }
+
   ASSERT_EQ((unsigned int)(kJobs - kLowPoolSize),
             env_->GetThreadPoolQueueLen());
   ASSERT_EQ((unsigned int)(kJobs - kLowPoolSize),
             env_->GetThreadPoolQueueLen(Env::Priority::LOW));
   ASSERT_EQ((unsigned int)(kJobs - kHighPoolSize),
             env_->GetThreadPoolQueueLen(Env::Priority::HIGH));
+
+  // Trigger jobs to run.
+  {
+    MutexLock l(&mutex);
+    should_start = true;
+    cv.SignalAll();
+  }
 
   // wait for all jobs to finish
   while (low_pool_job.NumFinished() < kJobs ||
@@ -291,6 +328,9 @@ TEST_P(EnvPosixTestWithParam, TwoPools) {
 
   ASSERT_EQ(0U, env_->GetThreadPoolQueueLen(Env::Priority::LOW));
   ASSERT_EQ(0U, env_->GetThreadPoolQueueLen(Env::Priority::HIGH));
+
+  // Hold jobs to schedule;
+  should_start = false;
 
   // call IncBackgroundThreadsIfNeeded to two pools. One increasing and
   // the other decreasing
@@ -305,13 +345,29 @@ TEST_P(EnvPosixTestWithParam, TwoPools) {
     env_->Schedule(&CB::Run, &high_pool_job, Env::Priority::HIGH);
   }
   // Wait a short while for the jobs to be dispatched.
-  Env::Default()->SleepForMicroseconds(kDelayMicros);
+  sleep_count = 0;
+  while ((unsigned int)(kJobs - kLowPoolSize) !=
+             env_->GetThreadPoolQueueLen(Env::Priority::LOW) ||
+         (unsigned int)(kJobs - (kHighPoolSize + 1)) !=
+             env_->GetThreadPoolQueueLen(Env::Priority::HIGH)) {
+    env_->SleepForMicroseconds(kDelayMicros);
+    if (++sleep_count > 100) {
+      break;
+    }
+  }
   ASSERT_EQ((unsigned int)(kJobs - kLowPoolSize),
             env_->GetThreadPoolQueueLen());
   ASSERT_EQ((unsigned int)(kJobs - kLowPoolSize),
             env_->GetThreadPoolQueueLen(Env::Priority::LOW));
   ASSERT_EQ((unsigned int)(kJobs - (kHighPoolSize + 1)),
             env_->GetThreadPoolQueueLen(Env::Priority::HIGH));
+
+  // Trigger jobs to run.
+  {
+    MutexLock l(&mutex);
+    should_start = true;
+    cv.SignalAll();
+  }
 
   // wait for all jobs to finish
   while (low_pool_job.NumFinished() < kJobs ||
@@ -584,6 +640,39 @@ class IoctlFriendlyTmpdir {
   std::string dir_;
 };
 
+TEST_F(EnvPosixTest, PositionedAppend) {
+  unique_ptr<WritableFile> writable_file;
+
+  EnvOptions options;
+  options.use_direct_writes = true;
+  options.use_mmap_writes = false;
+  IoctlFriendlyTmpdir ift;
+  ASSERT_OK(env_->NewWritableFile(ift.name() + "/f", &writable_file, options));
+
+  const size_t kBlockSize = 512;
+  const size_t kPageSize = 4096;
+  const size_t kDataSize = kPageSize;
+  // Write a page worth of 'a'
+  auto data_ptr = NewAligned(kDataSize, 'a');
+  Slice data_a(data_ptr.get(), kDataSize);
+  ASSERT_OK(writable_file->PositionedAppend(data_a, 0U));
+  // Write a page worth of 'b' right after the first sector
+  data_ptr = NewAligned(kDataSize, 'b');
+  Slice data_b(data_ptr.get(), kDataSize);
+  ASSERT_OK(writable_file->PositionedAppend(data_b, kBlockSize));
+  ASSERT_OK(writable_file->Close());
+  // The file now has 1 sector worth of a followed by a page worth of b
+
+  // Verify the above
+  unique_ptr<SequentialFile> seq_file;
+  ASSERT_OK(env_->NewSequentialFile(ift.name() + "/f", &seq_file, options));
+  char scratch[kPageSize * 2];
+  Slice result;
+  ASSERT_OK(seq_file->Read(sizeof(scratch), &result, scratch));
+  ASSERT_EQ(kPageSize + kBlockSize, result.size());
+  ASSERT_EQ('a', result[kBlockSize - 1]);
+  ASSERT_EQ('b', result[kBlockSize]);
+}
 
 // Only works in linux platforms
 TEST_F(EnvPosixTest, RandomAccessUniqueID) {
@@ -1184,6 +1273,158 @@ TEST_P(EnvPosixTestWithParam, WritableFileWrapper) {
   }
 
   EXPECT_EQ(14, step);
+}
+
+TEST_P(EnvPosixTestWithParam, PosixRandomRWFile) {
+  const std::string path = test::TmpDir(env_) + "/random_rw_file";
+
+  env_->DeleteFile(path);
+
+  std::unique_ptr<RandomRWFile> file;
+  ASSERT_OK(env_->NewRandomRWFile(path, &file, EnvOptions()));
+
+  char buf[10000];
+  Slice read_res;
+
+  ASSERT_OK(file->Write(0, "ABCD"));
+  ASSERT_OK(file->Read(0, 10, &read_res, buf));
+  ASSERT_EQ(read_res.ToString(), "ABCD");
+
+  ASSERT_OK(file->Write(2, "XXXX"));
+  ASSERT_OK(file->Read(0, 10, &read_res, buf));
+  ASSERT_EQ(read_res.ToString(), "ABXXXX");
+
+  ASSERT_OK(file->Write(10, "ZZZ"));
+  ASSERT_OK(file->Read(10, 10, &read_res, buf));
+  ASSERT_EQ(read_res.ToString(), "ZZZ");
+
+  ASSERT_OK(file->Write(11, "Y"));
+  ASSERT_OK(file->Read(10, 10, &read_res, buf));
+  ASSERT_EQ(read_res.ToString(), "ZYZ");
+
+  ASSERT_OK(file->Write(200, "FFFFF"));
+  ASSERT_OK(file->Read(200, 10, &read_res, buf));
+  ASSERT_EQ(read_res.ToString(), "FFFFF");
+
+  ASSERT_OK(file->Write(205, "XXXX"));
+  ASSERT_OK(file->Read(200, 10, &read_res, buf));
+  ASSERT_EQ(read_res.ToString(), "FFFFFXXXX");
+
+  ASSERT_OK(file->Write(5, "QQQQ"));
+  ASSERT_OK(file->Read(0, 9, &read_res, buf));
+  ASSERT_EQ(read_res.ToString(), "ABXXXQQQQ");
+
+  ASSERT_OK(file->Read(2, 4, &read_res, buf));
+  ASSERT_EQ(read_res.ToString(), "XXXQ");
+
+  // Close file and reopen it
+  file->Close();
+  ASSERT_OK(env_->NewRandomRWFile(path, &file, EnvOptions()));
+
+  ASSERT_OK(file->Read(0, 9, &read_res, buf));
+  ASSERT_EQ(read_res.ToString(), "ABXXXQQQQ");
+
+  ASSERT_OK(file->Read(10, 3, &read_res, buf));
+  ASSERT_EQ(read_res.ToString(), "ZYZ");
+
+  ASSERT_OK(file->Read(200, 9, &read_res, buf));
+  ASSERT_EQ(read_res.ToString(), "FFFFFXXXX");
+
+  ASSERT_OK(file->Write(4, "TTTTTTTTTTTTTTTT"));
+  ASSERT_OK(file->Read(0, 10, &read_res, buf));
+  ASSERT_EQ(read_res.ToString(), "ABXXTTTTTT");
+
+  // Clean up
+  env_->DeleteFile(path);
+}
+
+class RandomRWFileWithMirrorString {
+ public:
+  explicit RandomRWFileWithMirrorString(RandomRWFile* _file) : file_(_file) {}
+
+  void Write(size_t offset, const std::string& data) {
+    // Write to mirror string
+    StringWrite(offset, data);
+
+    // Write to file
+    Status s = file_->Write(offset, data);
+    ASSERT_OK(s) << s.ToString();
+  }
+
+  void Read(size_t offset = 0, size_t n = 1000000) {
+    Slice str_res(nullptr, 0);
+    if (offset < file_mirror_.size()) {
+      size_t str_res_sz = std::min(file_mirror_.size() - offset, n);
+      str_res = Slice(file_mirror_.data() + offset, str_res_sz);
+      StopSliceAtNull(&str_res);
+    }
+
+    Slice file_res;
+    Status s = file_->Read(offset, n, &file_res, buf_);
+    ASSERT_OK(s) << s.ToString();
+    StopSliceAtNull(&file_res);
+
+    ASSERT_EQ(str_res.ToString(), file_res.ToString()) << offset << " " << n;
+  }
+
+  void SetFile(RandomRWFile* _file) { file_ = _file; }
+
+ private:
+  void StringWrite(size_t offset, const std::string& src) {
+    if (offset + src.size() > file_mirror_.size()) {
+      file_mirror_.resize(offset + src.size(), '\0');
+    }
+
+    char* pos = const_cast<char*>(file_mirror_.data() + offset);
+    memcpy(pos, src.data(), src.size());
+  }
+
+  void StopSliceAtNull(Slice* slc) {
+    for (size_t i = 0; i < slc->size(); i++) {
+      if ((*slc)[i] == '\0') {
+        *slc = Slice(slc->data(), i);
+        break;
+      }
+    }
+  }
+
+  char buf_[10000];
+  RandomRWFile* file_;
+  std::string file_mirror_;
+};
+
+TEST_P(EnvPosixTestWithParam, PosixRandomRWFileRandomized) {
+  const std::string path = test::TmpDir(env_) + "/random_rw_file_rand";
+  env_->DeleteFile(path);
+
+  unique_ptr<RandomRWFile> file;
+  ASSERT_OK(env_->NewRandomRWFile(path, &file, EnvOptions()));
+  RandomRWFileWithMirrorString file_with_mirror(file.get());
+
+  Random rnd(301);
+  std::string buf;
+  for (int i = 0; i < 10000; i++) {
+    // Genrate random data
+    test::RandomString(&rnd, 10, &buf);
+
+    // Pick random offset for write
+    size_t write_off = rnd.Next() % 1000;
+    file_with_mirror.Write(write_off, buf);
+
+    // Pick random offset for read
+    size_t read_off = rnd.Next() % 1000;
+    size_t read_sz = rnd.Next() % 20;
+    file_with_mirror.Read(read_off, read_sz);
+
+    if (i % 500 == 0) {
+      // Reopen the file every 500 iters
+      ASSERT_OK(env_->NewRandomRWFile(path, &file, EnvOptions()));
+      file_with_mirror.SetFile(file.get());
+    }
+  }
+
+  // clean up
+  env_->DeleteFile(path);
 }
 
 INSTANTIATE_TEST_CASE_P(DefaultEnv, EnvPosixTestWithParam,

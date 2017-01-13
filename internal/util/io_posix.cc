@@ -105,6 +105,11 @@ Status ReadAligned(int fd, Slice* data, const uint64_t offset,
       break;
     }
     bytes_read += status;
+    if (status % static_cast<ssize_t>(kSectorSize) != 0) {
+      // Bytes reads don't fill sectors. Should only happen at the end
+      // of the file.
+      break;
+    }
   }
 
   *data = Slice(scratch, bytes_read);
@@ -145,8 +150,7 @@ Status ReadUnaligned(int fd, Slice* data, const uint64_t offset,
 
 Status DirectIORead(int fd, Slice* result, size_t off, size_t n,
                     char* scratch) {
-  if (IsSectorAligned(off) && IsSectorAligned(n) &&
-      IsPageAligned(result->data())) {
+  if (IsSectorAligned(off) && IsSectorAligned(n) && IsPageAligned(scratch)) {
     return ReadAligned(fd, result, off, n, scratch);
   }
   return ReadUnaligned(fd, result, off, n, scratch);
@@ -693,6 +697,26 @@ Status PosixWritableFile::Append(const Slice& data) {
   return Status::OK();
 }
 
+Status PosixWritableFile::PositionedAppend(const Slice& data, uint64_t offset) {
+  assert(offset <= std::numeric_limits<off_t>::max());
+  const char* src = data.data();
+  size_t left = data.size();
+  while (left != 0) {
+    ssize_t done = pwrite(fd_, src, left, static_cast<off_t>(offset));
+    if (done < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return IOError(filename_, errno);
+    }
+    left -= done;
+    offset += done;
+    src += done;
+  }
+  filesize_ = offset + data.size();
+  return Status::OK();
+}
+
 Status PosixWritableFile::Close() {
   Status s;
 
@@ -822,6 +846,95 @@ Status PosixDirectIOWritableFile::PositionedAppend(const Slice& data,
     return Status::IOError("offset or size is not aligned");
   }
   return PosixWritableFile::PositionedAppend(data, offset);
+}
+
+/*
+ * PosixRandomRWFile
+ */
+
+PosixRandomRWFile::PosixRandomRWFile(const std::string& fname, int fd,
+                                     const EnvOptions& options)
+    : filename_(fname), fd_(fd) {}
+
+PosixRandomRWFile::~PosixRandomRWFile() {
+  if (fd_ >= 0) {
+    Close();
+  }
+}
+
+Status PosixRandomRWFile::Write(uint64_t offset, const Slice& data) {
+  const char* src = data.data();
+  size_t left = data.size();
+  while (left != 0) {
+    ssize_t done = pwrite(fd_, src, left, offset);
+    if (done < 0) {
+      // error while writing to file
+      if (errno == EINTR) {
+        // write was interrupted, try again.
+        continue;
+      }
+      return IOError(filename_, errno);
+    }
+
+    // Wrote `done` bytes
+    left -= done;
+    offset += done;
+    src += done;
+  }
+
+  return Status::OK();
+}
+
+Status PosixRandomRWFile::Read(uint64_t offset, size_t n, Slice* result,
+                               char* scratch) const {
+  size_t left = n;
+  char* ptr = scratch;
+  while (left > 0) {
+    ssize_t done = pread(fd_, ptr, left, offset);
+    if (done < 0) {
+      // error while reading from file
+      if (errno == EINTR) {
+        // read was interrupted, try again.
+        continue;
+      }
+      return IOError(filename_, errno);
+    } else if (done == 0) {
+      // Nothing more to read
+      break;
+    }
+
+    // Read `done` bytes
+    ptr += done;
+    offset += done;
+    left -= done;
+  }
+
+  *result = Slice(scratch, n - left);
+  return Status::OK();
+}
+
+Status PosixRandomRWFile::Flush() { return Status::OK(); }
+
+Status PosixRandomRWFile::Sync() {
+  if (fdatasync(fd_) < 0) {
+    return IOError(filename_, errno);
+  }
+  return Status::OK();
+}
+
+Status PosixRandomRWFile::Fsync() {
+  if (fsync(fd_) < 0) {
+    return IOError(filename_, errno);
+  }
+  return Status::OK();
+}
+
+Status PosixRandomRWFile::Close() {
+  if (close(fd_) < 0) {
+    return IOError(filename_, errno);
+  }
+  fd_ = -1;
+  return Status::OK();
 }
 
 /*

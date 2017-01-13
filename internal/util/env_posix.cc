@@ -42,7 +42,6 @@
 #include "rocksdb/slice.h"
 #include "util/coding.h"
 #include "util/io_posix.h"
-#include "util/threadpool.h"
 #include "util/iostats_context_imp.h"
 #include "util/logging.h"
 #include "util/posix_logger.h"
@@ -51,6 +50,7 @@
 #include "util/sync_point.h"
 #include "util/thread_local.h"
 #include "util/thread_status_updater.h"
+#include "util/threadpool_imp.h"
 
 #if !defined(TMPFS_MAGIC)
 #define TMPFS_MAGIC 0x01021994
@@ -157,6 +157,7 @@ class PosixEnv : public Env {
       *result = nullptr;
       return IOError(fname, errno);
     } else if (options.use_direct_reads && !options.use_mmap_writes) {
+      fclose(f);
 #ifdef OS_MACOSX
       int flags = O_RDONLY;
 #else
@@ -215,6 +216,7 @@ class PosixEnv : public Env {
       }
       close(fd);
     } else if (options.use_direct_reads) {
+      close(fd);
 #ifdef OS_MACOSX
       int flags = O_RDONLY;
 #else
@@ -269,10 +271,18 @@ class PosixEnv : public Env {
       if (options.use_mmap_writes && !forceMmapOff) {
         result->reset(new PosixMmapFile(fname, fd, page_size_, options));
       } else if (options.use_direct_writes) {
+        close(fd);
 #ifdef OS_MACOSX
         int flags = O_WRONLY | O_APPEND | O_TRUNC | O_CREAT;
 #else
-        int flags = O_WRONLY | O_APPEND | O_TRUNC | O_CREAT | O_DIRECT;
+        // Note: we should avoid O_APPEND here due to ta the following bug:
+        // POSIX requires that opening a file with the O_APPEND flag should
+        // have no affect on the location at which pwrite() writes data.
+        // However, on Linux, if a file is opened with O_APPEND, pwrite()
+        // appends data to the end of the file, regardless of the value of
+        // offset.
+        // More info here: https://linux.die.net/man/2/pwrite
+        int flags = O_WRONLY | O_TRUNC | O_CREAT | O_DIRECT;
 #endif
         TEST_SYNC_POINT_CALLBACK("NewWritableFile:O_DIRECT", &flags);
         fd = open(fname.c_str(), flags, 0644);
@@ -343,6 +353,27 @@ class PosixEnv : public Env {
       }
     }
     return s;
+  }
+
+  virtual Status NewRandomRWFile(const std::string& fname,
+                                 unique_ptr<RandomRWFile>* result,
+                                 const EnvOptions& options) override {
+    int fd = -1;
+    while (fd < 0) {
+      IOSTATS_TIMER_GUARD(open_nanos);
+      fd = open(fname.c_str(), O_CREAT | O_RDWR, 0644);
+      if (fd < 0) {
+        // Error while opening the file
+        if (errno == EINTR) {
+          continue;
+        }
+        return IOError(fname, errno);
+      }
+    }
+
+    SetFD_CLOEXEC(fd, &options);
+    result->reset(new PosixRandomRWFile(fname, fd, options));
+    return Status::OK();
   }
 
   virtual Status NewDirectory(const std::string& name,
@@ -739,7 +770,7 @@ class PosixEnv : public Env {
 
   size_t page_size_;
 
-  std::vector<ThreadPool> thread_pools_;
+  std::vector<ThreadPoolImpl> thread_pools_;
   pthread_mutex_t mu_;
   std::vector<pthread_t> threads_to_join_;
 };
@@ -749,7 +780,7 @@ PosixEnv::PosixEnv()
       forceMmapOff(false),
       page_size_(getpagesize()),
       thread_pools_(Priority::TOTAL) {
-  ThreadPool::PthreadCall("mutex_init", pthread_mutex_init(&mu_, nullptr));
+  ThreadPoolImpl::PthreadCall("mutex_init", pthread_mutex_init(&mu_, nullptr));
   for (int pool_id = 0; pool_id < Env::Priority::TOTAL; ++pool_id) {
     thread_pools_[pool_id].SetThreadPriority(
         static_cast<Env::Priority>(pool_id));
@@ -791,11 +822,11 @@ void PosixEnv::StartThread(void (*function)(void* arg), void* arg) {
   StartThreadState* state = new StartThreadState;
   state->user_function = function;
   state->arg = arg;
-  ThreadPool::PthreadCall(
+  ThreadPoolImpl::PthreadCall(
       "start thread", pthread_create(&t, nullptr, &StartThreadWrapper, state));
-  ThreadPool::PthreadCall("lock", pthread_mutex_lock(&mu_));
+  ThreadPoolImpl::PthreadCall("lock", pthread_mutex_lock(&mu_));
   threads_to_join_.push_back(t);
-  ThreadPool::PthreadCall("unlock", pthread_mutex_unlock(&mu_));
+  ThreadPoolImpl::PthreadCall("unlock", pthread_mutex_unlock(&mu_));
 }
 
 void PosixEnv::WaitForJoin() {

@@ -12,6 +12,7 @@
 
 #include "db/dbformat.h"
 #include "db/merge_context.h"
+#include "db/range_del_aggregator.h"
 #include "rocksdb/compaction_filter.h"
 #include "rocksdb/env.h"
 #include "rocksdb/slice.h"
@@ -68,9 +69,11 @@ class MergeHelper {
   //     - a Put/Delete,
   //     - a different user key,
   //     - a specific sequence number (snapshot boundary),
+  //     - REMOVE_AND_SKIP_UNTIL returned from compaction filter,
   //  or - the end of iteration
   // iter: (IN)  points to the first merge type entry
   //       (OUT) points to the first entry not included in the merge process
+  // range_del_agg: (IN) filters merge operands covered by range tombstones.
   // stop_before: (IN) a sequence number that merge should not cross.
   //                   0 means no restriction
   // at_bottom:   (IN) true if the iterator covers the bottem level, which means
@@ -85,12 +88,16 @@ class MergeHelper {
   //
   // REQUIRED: The first key in the input is not corrupted.
   Status MergeUntil(InternalIterator* iter,
+                    RangeDelAggregator* range_del_agg = nullptr,
                     const SequenceNumber stop_before = 0,
                     const bool at_bottom = false);
 
   // Filters a merge operand using the compaction filter specified
-  // in the constructor. Returns true if the operand should be filtered out.
-  bool FilterMerge(const Slice& user_key, const Slice& value_slice);
+  // in the constructor. Returns the decision that the filter made.
+  // Uses compaction_filter_value_ and compaction_filter_skip_until_ for the
+  // optional outputs of compaction filter.
+  CompactionFilter::Decision FilterMerge(const Slice& user_key,
+                                         const Slice& value_slice);
 
   // Query the merge result
   // These are valid until the next MergeUntil call
@@ -124,6 +131,20 @@ class MergeHelper {
   uint64_t TotalFilterTime() const { return total_filter_time_; }
   bool HasOperator() const { return user_merge_operator_ != nullptr; }
 
+  // If compaction filter returned REMOVE_AND_SKIP_UNTIL, this method will
+  // return true and fill *until with the key to which we should skip.
+  // If true, keys() and values() are empty.
+  bool FilteredUntil(Slice* skip_until) const {
+    if (!has_compaction_filter_skip_until_) {
+      return false;
+    }
+    assert(compaction_filter_ != nullptr);
+    assert(skip_until != nullptr);
+    assert(compaction_filter_skip_until_.Valid());
+    *skip_until = compaction_filter_skip_until_.Encode();
+    return true;
+  }
+
  private:
   Env* env_;
   const Comparator* user_comparator_;
@@ -146,6 +167,10 @@ class MergeHelper {
   StopWatchNano filter_timer_;
   uint64_t total_filter_time_;
   Statistics* stats_;
+
+  bool has_compaction_filter_skip_until_ = false;
+  std::string compaction_filter_value_;
+  InternalKey compaction_filter_skip_until_;
 };
 
 // MergeOutputIterator can be used to iterate over the result of a merge.

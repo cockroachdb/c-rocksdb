@@ -7,8 +7,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 #pragma once
+#include <errno.h>
 #include <unistd.h>
 #include <atomic>
+#include <string>
 #include "rocksdb/env.h"
 
 // For non linux platform, the following macros are used only as place
@@ -24,7 +26,9 @@
 namespace rocksdb {
 
 static Status IOError(const std::string& context, int err_number) {
-  return Status::IOError(context, strerror(err_number));
+  return (err_number == ENOSPC) ?
+      Status::NoSpace(context, strerror(err_number)) :
+      Status::IOError(context, strerror(err_number));
 }
 
 class PosixHelper {
@@ -121,6 +125,7 @@ class PosixWritableFile : public WritableFile {
   virtual Status Truncate(uint64_t size) override { return Status::OK(); }
   virtual Status Close() override;
   virtual Status Append(const Slice& data) override;
+  virtual Status PositionedAppend(const Slice& data, uint64_t offset) override;
   virtual Status Flush() override;
   virtual Status Sync() override;
   virtual Status Fsync() override;
@@ -213,6 +218,27 @@ class PosixMmapFile : public WritableFile {
 #ifdef ROCKSDB_FALLOCATE_PRESENT
   virtual Status Allocate(uint64_t offset, uint64_t len) override;
 #endif
+};
+
+class PosixRandomRWFile : public RandomRWFile {
+ public:
+  explicit PosixRandomRWFile(const std::string& fname, int fd,
+                             const EnvOptions& options);
+  virtual ~PosixRandomRWFile();
+
+  virtual Status Write(uint64_t offset, const Slice& data) override;
+
+  virtual Status Read(uint64_t offset, size_t n, Slice* result,
+                      char* scratch) const override;
+
+  virtual Status Flush() override;
+  virtual Status Sync() override;
+  virtual Status Fsync() override;
+  virtual Status Close() override;
+
+ private:
+  const std::string filename_;
+  int fd_;
 };
 
 class PosixDirectory : public Directory {
