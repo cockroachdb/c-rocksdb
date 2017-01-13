@@ -17,7 +17,7 @@
 #pragma once
 
 #include <rocksdb/env.h>
-#include "util/threadpool.h"
+#include "util/threadpool_imp.h"
 
 #include <mutex>
 #include <vector>
@@ -63,7 +63,7 @@ private:
 
   Env*                     hosted_env_;
   mutable std::mutex       mu_;
-  std::vector<ThreadPool>  thread_pools_;
+  std::vector<ThreadPoolImpl> thread_pools_;
   std::vector<std::thread> threads_to_join_;
 
 };
@@ -90,6 +90,11 @@ public:
 
   virtual Status NewWritableFile(const std::string& fname,
     std::unique_ptr<WritableFile>* result,
+    const EnvOptions& options);
+
+  // The returned file will only be accessed by one thread at a time.
+  virtual Status NewRandomRWFile(const std::string& fname,
+    unique_ptr<RandomRWFile>* result,
     const EnvOptions& options);
 
   virtual Status NewDirectory(const std::string& name,
@@ -188,6 +193,11 @@ public:
     std::unique_ptr<WritableFile>* result,
     const EnvOptions& options) override;
 
+  // The returned file will only be accessed by one thread at a time.
+  Status NewRandomRWFile(const std::string& fname,
+    unique_ptr<RandomRWFile>* result,
+    const EnvOptions& options) override;
+
   Status NewDirectory(const std::string& name,
     std::unique_ptr<Directory>* result) override;
 
@@ -268,8 +278,7 @@ public:
 private:
 
   WinEnvIO      winenv_io_;
-  WinEnvThreads winenv_threads_; 
-
+  WinEnvThreads winenv_threads_;
 };
 
 }

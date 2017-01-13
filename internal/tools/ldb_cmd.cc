@@ -167,6 +167,10 @@ LDBCommand* LDBCommand::SelectCommand(const ParsedParams& parsed_params) {
   } else if (parsed_params.cmd == DeleteCommand::Name()) {
     return new DeleteCommand(parsed_params.cmd_params, parsed_params.option_map,
                              parsed_params.flags);
+  } else if (parsed_params.cmd == DeleteRangeCommand::Name()) {
+    return new DeleteRangeCommand(parsed_params.cmd_params,
+                                  parsed_params.option_map,
+                                  parsed_params.flags);
   } else if (parsed_params.cmd == ApproxSizeCommand::Name()) {
     return new ApproxSizeCommand(parsed_params.cmd_params,
                                  parsed_params.option_map, parsed_params.flags);
@@ -509,7 +513,7 @@ Options LDBCommand::PrepareOptionsForOpenDB() {
     } else if (comp == "xpress") {
       opt.compression = kXpressCompression;
     } else if (comp == "zstd") {
-      opt.compression = kZSTDNotFinalCompression;
+      opt.compression = kZSTD;
     } else {
       // Unknown compression.
       exec_state_ =
@@ -775,7 +779,7 @@ void CompactorCommand::DoCommand() {
   CompactRangeOptions cro;
   cro.bottommost_level_compaction = BottommostLevelCompaction::kForce;
 
-  db_->CompactRange(cro, begin, end);
+  db_->CompactRange(cro, GetCfHandle(), begin, end);
   exec_state_ = LDBCommandExecuteResult::Succeed("");
 
   delete begin;
@@ -881,7 +885,8 @@ void DumpManifestFile(std::string file, bool verbose, bool hex, bool json) {
   options.num_levels = 64;
   WriteController wc(options.delayed_write_rate);
   WriteBufferManager wb(options.db_write_buffer_size);
-  VersionSet versions(dbname, &options, sopt, tc.get(), &wb, &wc);
+  ImmutableDBOptions immutable_db_options(options);
+  VersionSet versions(dbname, &immutable_db_options, sopt, tc.get(), &wb, &wc);
   Status s = versions.DumpManifest(options, file, verbose, hex, json);
   if (!s.ok()) {
     printf("Error in processing file %s %s\n", file.c_str(),
@@ -1182,7 +1187,9 @@ void InternalDumpCommand::DoCommand() {
   uint64_t s1=0,s2=0;
   // Setup internal key iterator
   Arena arena;
-  ScopedArenaIterator iter(idb->NewInternalIterator(&arena));
+  auto icmp = InternalKeyComparator(options_.comparator);
+  RangeDelAggregator range_del_agg(icmp, {} /* snapshots */);
+  ScopedArenaIterator iter(idb->NewInternalIterator(&arena, &range_del_agg));
   Status st = iter->status();
   if (!st.ok()) {
     exec_state_ =
@@ -1585,13 +1592,14 @@ Options ReduceDBLevelsCommand::PrepareOptionsForOpenDB() {
 
 Status ReduceDBLevelsCommand::GetOldNumOfLevels(Options& opt,
     int* levels) {
+  ImmutableDBOptions db_options(opt);
   EnvOptions soptions;
   std::shared_ptr<Cache> tc(
       NewLRUCache(opt.max_open_files - 10, opt.table_cache_numshardbits));
   const InternalKeyComparator cmp(opt.comparator);
   WriteController wc(opt.delayed_write_rate);
   WriteBufferManager wb(opt.db_write_buffer_size);
-  VersionSet versions(db_path_, &opt, soptions, tc.get(), &wb, &wc);
+  VersionSet versions(db_path_, &db_options, soptions, tc.get(), &wb, &wc);
   std::vector<ColumnFamilyDescriptor> dummy;
   ColumnFamilyDescriptor dummy_descriptor(kDefaultColumnFamilyName,
                                           ColumnFamilyOptions(opt));
@@ -1847,6 +1855,14 @@ class InMemoryHandler : public WriteBatch::Handler {
   virtual Status SingleDeleteCF(uint32_t cf, const Slice& key) override {
     row_ << "SINGLE_DELETE(" << cf << ") : ";
     row_ << LDBCommand::StringToHex(key.ToString()) << " ";
+    return Status::OK();
+  }
+
+  virtual Status DeleteRangeCF(uint32_t cf, const Slice& begin_key,
+                               const Slice& end_key) override {
+    row_ << "DELETE_RANGE(" << cf << ") : ";
+    row_ << LDBCommand::StringToHex(begin_key.ToString()) << " ";
+    row_ << LDBCommand::StringToHex(end_key.ToString()) << " ";
     return Status::OK();
   }
 
@@ -2335,6 +2351,45 @@ void DeleteCommand::DoCommand() {
     return;
   }
   Status st = db_->Delete(WriteOptions(), GetCfHandle(), key_);
+  if (st.ok()) {
+    fprintf(stdout, "OK\n");
+  } else {
+    exec_state_ = LDBCommandExecuteResult::Failed(st.ToString());
+  }
+}
+
+DeleteRangeCommand::DeleteRangeCommand(
+    const std::vector<std::string>& params,
+    const std::map<std::string, std::string>& options,
+    const std::vector<std::string>& flags)
+    : LDBCommand(options, flags, false,
+                 BuildCmdLineOptions({ARG_HEX, ARG_KEY_HEX, ARG_VALUE_HEX})) {
+  if (params.size() != 2) {
+    exec_state_ = LDBCommandExecuteResult::Failed(
+        "begin and end keys must be specified for the delete command");
+  } else {
+    begin_key_ = params.at(0);
+    end_key_ = params.at(1);
+    if (is_key_hex_) {
+      begin_key_ = HexToString(begin_key_);
+      end_key_ = HexToString(end_key_);
+    }
+  }
+}
+
+void DeleteRangeCommand::Help(std::string& ret) {
+  ret.append("  ");
+  ret.append(DeleteRangeCommand::Name() + " <begin key> <end key>");
+  ret.append("\n");
+}
+
+void DeleteRangeCommand::DoCommand() {
+  if (!db_) {
+    assert(GetExecuteState().IsFailed());
+    return;
+  }
+  Status st =
+      db_->DeleteRange(WriteOptions(), GetCfHandle(), begin_key_, end_key_);
   if (st.ok()) {
     fprintf(stdout, "OK\n");
   } else {
