@@ -16,4 +16,5 @@ package rocksdb
 // #cgo freebsd CXXFLAGS: -Wshorten-64-to-32
 // #cgo dragonfly CXXFLAGS: -Wshorten-64-to-32
 // #cgo windows LDFLAGS: -lrpcrt4
+// #cgo amd64 !freebsd CXXFLAGS: -msse -msse4.2
 import "C"
