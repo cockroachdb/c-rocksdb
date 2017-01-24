@@ -19,8 +19,11 @@
 # machine (or a linux docker container):
 #   cd internal
 #   ./build_tools/build_detect_platform tmp.txt
-#   # Manually compare the PLATFORM_CCFLAGS and PLATFORM_CXXFLAGS to what's in
-#   # cgo_flags.go
+#   # Manually update cgo_flags with PLATFORM_{CC,CXX}FLAGS from tmp.txt.
+#   #
+#   # Note that musl doesn't support some features of glibc, so we omit:
+#   # -DROCKSDB_PTHREAD_ADAPTIVE_MUTEX -DROCKSDB_BACKTRACE
+#   # on Linux.
 #
 # Ask @tamird if you run into issues along the way.
 #
