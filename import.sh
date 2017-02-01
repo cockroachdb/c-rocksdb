@@ -19,10 +19,14 @@
 # machine (or a linux docker container):
 #   cd internal
 #   ./build_tools/build_detect_platform tmp.txt
-#   # Manually update cgo_flags with PLATFORM_{CC,CXX}FLAGS from tmp.txt.
+#   # Manually update cgo_flags.go with PLATFORM_{CC,CXX}FLAGS from tmp.txt.
 #   #
 #   # Note that musl doesn't support some features of glibc, so we omit:
 #   # -DROCKSDB_PTHREAD_ADAPTIVE_MUTEX -DROCKSDB_BACKTRACE
+#   # on Linux.
+#   #
+#   # Note that Linux 2.6.32 (RHEL 6) doesn't support FALLOC_FL_PUNCH_HOLE so we omit:
+#   # -DROCKSDB_FALLOCATE_PRESENT
 #   # on Linux.
 #
 # Ask @tamird if you run into issues along the way.
@@ -37,6 +41,9 @@ rm -rf internal/*
 find . -type l -not -path './.git/*' | xargs rm
 curl -sL https://github.com/facebook/rocksdb/archive/v5.0.2.tar.gz | tar zxf - -C internal --strip-components=1
 make -C internal util/build_version.cc
+# TODO(tamird,petermattis): remove when
+# https://github.com/facebook/rocksdb/commit/4a17b47bb5a2cc09f95acb53ec565bccd171ee4e
+# is released.
 patch -p1 < testharness.patch
 # Downcase some windows-only includes for compatibility with mingw64.
 grep -lRF '<Windows.h>' internal | xargs sed -i~ 's!<Windows.h>!<windows.h>!g'
