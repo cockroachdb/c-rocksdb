@@ -9,7 +9,7 @@ package rocksdb
 // #cgo windows CPPFLAGS: -DOS_WIN
 // #cgo !windows CPPFLAGS: -DROCKSDB_PLATFORM_POSIX -DROCKSDB_LIB_IO_POSIX
 // #cgo darwin CPPFLAGS: -DOS_MACOSX -DROCKSDB_BACKTRACE
-// #cgo linux CPPFLAGS: -DOS_LINUX -fno-builtin-memcmp -DROCKSDB_FALLOCATE_PRESENT -DROCKSDB_MALLOC_USABLE_SIZE
+// #cgo linux CPPFLAGS: -DOS_LINUX -fno-builtin-memcmp -DROCKSDB_MALLOC_USABLE_SIZE
 // #cgo freebsd CPPFLAGS: -DOS_FREEBSD
 // #cgo dragonfly CPPFLAGS: -DOS_DRAGONFLY
 // #cgo CXXFLAGS: -std=c++11
