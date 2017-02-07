@@ -52,6 +52,6 @@ grep -lRF '<Rpc.h>' internal | xargs sed -i~ 's!<Rpc.h>!<rpc.h>!g'
 grep -lRF 'i64;' internal | xargs sed -i~ 's!i64;!LL;!g'
 
 # symlink so cgo compiles them
-for source_file in $(make sources | grep -vE '(/redis/|(env|port)_[a-z]+.cc$)'); do
+for source_file in $(make sources | grep -vE '^internal/(port/win|utilities/redis)/|_posix.cc$'); do
   ln -sf $source_file $(echo $source_file | sed s,/,_,g)
 done
