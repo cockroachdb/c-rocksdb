@@ -30,10 +30,6 @@
 #   # on Linux.
 #
 # Ask @tamird if you run into issues along the way.
-#
-# After committing locally you should run the command below to ensure your repo
-# is in a clean state and then build/test cockroachdb with the new version:
-#   git clean -dxf
 
 set -eu
 
@@ -55,3 +51,5 @@ grep -lRF 'i64;' internal | xargs sed -i~ 's!i64;!LL;!g'
 for source_file in $(make sources | grep -vE '^internal/(port/win|utilities/redis)/|_posix.cc$'); do
   ln -sf $source_file $(echo $source_file | sed s,/,_,g)
 done
+
+git clean -dXf
