@@ -41,6 +41,9 @@ make -C internal util/build_version.cc
 # https://github.com/facebook/rocksdb/commit/4a17b47bb5a2cc09f95acb53ec565bccd171ee4e
 # is released.
 patch -p1 < testharness.patch
+# TODO(tamird): remove when
+# https://github.com/facebook/rocksdb/pull/1910 is merged and release.
+patch -p1 < gettimeofday.patch
 # Downcase some windows-only includes for compatibility with mingw64.
 grep -lRF '<Windows.h>' internal | xargs sed -i~ 's!<Windows.h>!<windows.h>!g'
 grep -lRF '<Rpc.h>' internal | xargs sed -i~ 's!<Rpc.h>!<rpc.h>!g'
