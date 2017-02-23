@@ -34,7 +34,7 @@
 set -eu
 
 rm -rf internal/*
-find . -type l -not -path './.git/*' | xargs rm
+find . -type l -not -path './.git/*' -exec rm {} \;
 curl -sL https://github.com/facebook/rocksdb/archive/v5.0.2.tar.gz | tar zxf - -C internal --strip-components=1
 make -C internal util/build_version.cc
 # TODO(tamird,petermattis): remove when
@@ -49,7 +49,7 @@ grep -lRF 'i64;' internal | xargs sed -i~ 's!i64;!LL;!g'
 
 # symlink so cgo compiles them
 for source_file in $(make sources | grep -vE '^internal/(port/win|utilities/redis)/|_posix.cc$'); do
-  ln -sf $source_file $(echo $source_file | sed s,/,_,g)
+  ln -sf "$source_file" "$(echo "$source_file" | tr / _)"
 done
 
 git clean -dXf
