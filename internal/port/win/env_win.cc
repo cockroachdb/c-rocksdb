@@ -32,7 +32,7 @@
 #include "util/thread_status_updater.h"
 #include "util/thread_status_util.h"
 
-#include <rpc.h>  // For UUID generation
+#include <rpc.h>  // for uuid generation
 #include <windows.h>
 
 namespace rocksdb {
