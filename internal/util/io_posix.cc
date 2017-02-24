@@ -656,6 +656,17 @@ Status PosixWritableFile::PositionedAppend(const Slice& data, uint64_t offset) {
   return Status::OK();
 }
 
+Status PosixWritableFile::Truncate(uint64_t size) {
+  Status s;
+  int r = ftruncate(fd_, size);
+  if (r < 0) {
+    s = IOError(filename_, errno);
+  } else {
+    filesize_ = size;
+  }
+  return s;
+}
+
 Status PosixWritableFile::Close() {
   Status s;
 
@@ -755,6 +766,7 @@ Status PosixWritableFile::Allocate(uint64_t offset, uint64_t len) {
     return IOError(filename_, errno);
   }
 }
+#endif
 
 Status PosixWritableFile::RangeSync(uint64_t offset, uint64_t nbytes) {
   assert(offset <= std::numeric_limits<off_t>::max());
@@ -770,7 +782,6 @@ Status PosixWritableFile::RangeSync(uint64_t offset, uint64_t nbytes) {
 size_t PosixWritableFile::GetUniqueId(char* id, size_t max_size) const {
   return PosixHelper::GetUniqueIdFromFile(fd_, id, max_size);
 }
-#endif
 
 /*
  * PosixRandomRWFile

@@ -93,9 +93,9 @@ class PosixWritableFile : public WritableFile {
                              const EnvOptions& options);
   virtual ~PosixWritableFile();
 
-  // Means Close() will properly take care of truncate
-  // and it does not need any additional information
-  virtual Status Truncate(uint64_t size) override { return Status::OK(); }
+  // Need to implement this so the file is truncated correctly
+  // with direct I/O
+  virtual Status Truncate(uint64_t size) override;
   virtual Status Close() override;
   virtual Status Append(const Slice& data) override;
   virtual Status PositionedAppend(const Slice& data, uint64_t offset) override;
@@ -113,9 +113,9 @@ class PosixWritableFile : public WritableFile {
   virtual Status InvalidateCache(size_t offset, size_t length) override;
 #ifdef ROCKSDB_FALLOCATE_PRESENT
   virtual Status Allocate(uint64_t offset, uint64_t len) override;
+#endif
   virtual Status RangeSync(uint64_t offset, uint64_t nbytes) override;
   virtual size_t GetUniqueId(char* id, size_t max_size) const override;
-#endif
 };
 
 // mmap() based random-access
