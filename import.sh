@@ -45,8 +45,10 @@ patch -p1 < testharness.patch
 # https://github.com/facebook/rocksdb/pull/1910 is merged and release.
 patch -p1 < gettimeofday.patch
 # Downcase some windows-only includes for compatibility with mingw64.
-grep -lRF '<Windows.h>' internal | xargs sed -i~ 's!<Windows.h>!<windows.h>!g'
-grep -lRF '<Rpc.h>' internal | xargs sed -i~ 's!<Rpc.h>!<rpc.h>!g'
+grep -lR '^#include <.*[A-Z].*>' internal | while IFS= read -r source_file; do
+  awk '/^#include <.*[A-Z].*>/ { print tolower($0); next; } { print; }' "$source_file" > tmp
+  mv tmp "$source_file"
+done
 # Avoid MSVC-only extensions for compatibility with mingw64.
 grep -lRF 'i64;' internal | xargs sed -i~ 's!i64;!LL;!g'
 
