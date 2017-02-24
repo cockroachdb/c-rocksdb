@@ -197,6 +197,19 @@ TEST_F(DBTest, MemEnvTest) {
 }
 #endif  // ROCKSDB_LITE
 
+TEST_F(DBTest, OpenWhenOpen) {
+  Options options = CurrentOptions();
+  options.env = env_;
+  rocksdb::DB* db2 = nullptr;
+  rocksdb::Status s = DB::Open(options, dbname_, &db2);
+
+  ASSERT_EQ(Status::Code::kIOError, s.code());
+  ASSERT_EQ(Status::SubCode::kNone, s.subcode());
+  ASSERT_TRUE(strstr(s.getState(), "lock ") != nullptr);
+
+  delete db2;
+}
+
 TEST_F(DBTest, WriteEmptyBatch) {
   Options options = CurrentOptions();
   options.env = env_;
@@ -3396,19 +3409,21 @@ TEST_F(DBTest, TableOptionsSanitizeTest) {
 TEST_F(DBTest, MmapAndBufferOptions) {
   Options options = CurrentOptions();
 
-  options.allow_os_buffer = false;
+  options.use_direct_reads = true;
   options.allow_mmap_reads = true;
   ASSERT_NOK(TryReopen(options));
 
   // All other combinations are acceptable
-  options.allow_os_buffer = true;
+  options.use_direct_reads = false;
   ASSERT_OK(TryReopen(options));
 
-  options.allow_os_buffer = false;
-  options.allow_mmap_reads = false;
-  ASSERT_OK(TryReopen(options));
+  if (IsDirectIOSupported()) {
+    options.use_direct_reads = true;
+    options.allow_mmap_reads = false;
+    ASSERT_OK(TryReopen(options));
+  }
 
-  options.allow_os_buffer = true;
+  options.use_direct_reads = false;
   ASSERT_OK(TryReopen(options));
 }
 #endif
@@ -3663,7 +3678,7 @@ TEST_F(DBTest, DynamicMemtableOptions) {
 }
 #endif  // ROCKSDB_LITE
 
-#if ROCKSDB_USING_THREAD_STATUS
+#ifdef ROCKSDB_USING_THREAD_STATUS
 namespace {
 void VerifyOperationCount(Env* env, ThreadStatus::OperationType op_type,
                           int expected_count) {
@@ -4970,7 +4985,7 @@ TEST_F(DBTest, MergeTestTime) {
 
   ASSERT_EQ(1, count);
   ASSERT_EQ(2000000, TestGetTickerCount(options, MERGE_OPERATION_TOTAL_TIME));
-#if ROCKSDB_USING_THREAD_STATUS
+#ifdef ROCKSDB_USING_THREAD_STATUS
   ASSERT_GT(TestGetTickerCount(options, FLUSH_WRITE_BYTES), 0);
 #endif  // ROCKSDB_USING_THREAD_STATUS
   this->env_->time_elapse_only_sleep_ = false;

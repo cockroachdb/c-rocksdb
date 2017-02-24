@@ -308,6 +308,7 @@ Options DBTestBase::CurrentOptions(
       break;
     case kManifestFileSize:
       options.max_manifest_file_size = 50;  // 50 bytes
+      break;
     case kPerfOptions:
       options.soft_rate_limit = 2.0;
       options.delayed_write_rate = 8 * 1024 * 1024;
@@ -475,6 +476,22 @@ Status DBTestBase::TryReopen(const Options& options) {
   Close();
   last_options_ = options;
   return DB::Open(options, dbname_, &db_);
+}
+
+bool DBTestBase::IsDirectIOSupported() {
+  EnvOptions env_options;
+  env_options.use_mmap_writes = false;
+  env_options.use_direct_writes = true;
+  std::string tmp = TempFileName(dbname_, 999);
+  Status s;
+  {
+    unique_ptr<WritableFile> file;
+    s = env_->NewWritableFile(tmp, &file, env_options);
+  }
+  if (s.ok()) {
+    s = env_->DeleteFile(tmp);
+  }
+  return s.ok();
 }
 
 Status DBTestBase::Flush(int cf) {

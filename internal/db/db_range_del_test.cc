@@ -41,7 +41,7 @@ TEST_F(DBRangeDelTest, NonBlockBasedTableNotSupported) {
 
 TEST_F(DBRangeDelTest, FlushOutputHasOnlyRangeTombstones) {
   ASSERT_OK(db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(), "dr1",
-                             "dr1"));
+                             "dr2"));
   ASSERT_OK(db_->Flush(FlushOptions()));
   ASSERT_EQ(1, NumTableFilesAtLevel(0));
 }
@@ -162,6 +162,28 @@ TEST_F(DBRangeDelTest, MaxCompactionBytesCutsOutputFiles) {
                     .Compare(files[1][i].largest, files[1][i + 1].smallest) <
                 0);
   }
+  db_->ReleaseSnapshot(snapshot);
+}
+
+TEST_F(DBRangeDelTest, SentinelsOmittedFromOutputFile) {
+  // Regression test for bug where sentinel range deletions (i.e., ones with
+  // sequence number of zero) were included in output files.
+  // snapshot protects range tombstone from dropping due to becoming obsolete.
+  const Snapshot* snapshot = db_->GetSnapshot();
+
+  // gaps between ranges creates sentinels in our internal representation
+  std::vector<std::pair<std::string, std::string>> range_dels = {{"a", "b"}, {"c", "d"}, {"e", "f"}};
+  for (const auto& range_del : range_dels) {
+    ASSERT_OK(db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(),
+                               range_del.first, range_del.second));
+  }
+  ASSERT_OK(db_->Flush(FlushOptions()));
+  ASSERT_EQ(1, NumTableFilesAtLevel(0));
+
+  std::vector<std::vector<FileMetaData>> files;
+  dbfull()->TEST_GetFilesMetaData(db_->DefaultColumnFamily(), &files);
+  ASSERT_GT(files[0][0].smallest_seqno, 0);
+
   db_->ReleaseSnapshot(snapshot);
 }
 
@@ -482,6 +504,209 @@ TEST_F(DBRangeDelTest, ObsoleteTombstoneCleanup) {
   db_->ReleaseSnapshot(snapshot);
 }
 #endif  // ROCKSDB_LITE
+
+TEST_F(DBRangeDelTest, GetCoveredKeyFromMutableMemtable) {
+  db_->Put(WriteOptions(), "key", "val");
+  ASSERT_OK(
+      db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(), "a", "z"));
+
+  ReadOptions read_opts;
+  std::string value;
+  ASSERT_TRUE(db_->Get(read_opts, "key", &value).IsNotFound());
+}
+
+TEST_F(DBRangeDelTest, GetCoveredKeyFromImmutableMemtable) {
+  Options opts = CurrentOptions();
+  opts.max_write_buffer_number = 3;
+  opts.min_write_buffer_number_to_merge = 2;
+  // SpecialSkipListFactory lets us specify maximum number of elements the
+  // memtable can hold. It switches the active memtable to immutable (flush is
+  // prevented by the above options) upon inserting an element that would
+  // overflow the memtable.
+  opts.memtable_factory.reset(new SpecialSkipListFactory(1));
+  Reopen(opts);
+
+  db_->Put(WriteOptions(), "key", "val");
+  ASSERT_OK(
+      db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(), "a", "z"));
+  db_->Put(WriteOptions(), "blah", "val");
+
+  ReadOptions read_opts;
+  std::string value;
+  ASSERT_TRUE(db_->Get(read_opts, "key", &value).IsNotFound());
+}
+
+TEST_F(DBRangeDelTest, GetCoveredKeyFromSst) {
+  db_->Put(WriteOptions(), "key", "val");
+  // snapshot prevents key from being deleted during flush
+  const Snapshot* snapshot = db_->GetSnapshot();
+  ASSERT_OK(
+      db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(), "a", "z"));
+  ASSERT_OK(db_->Flush(FlushOptions()));
+
+  ReadOptions read_opts;
+  std::string value;
+  ASSERT_TRUE(db_->Get(read_opts, "key", &value).IsNotFound());
+  db_->ReleaseSnapshot(snapshot);
+}
+
+TEST_F(DBRangeDelTest, GetCoveredMergeOperandFromMemtable) {
+  const int kNumMergeOps = 10;
+  Options opts = CurrentOptions();
+  opts.merge_operator = MergeOperators::CreateUInt64AddOperator();
+  Reopen(opts);
+
+  for (int i = 0; i < kNumMergeOps; ++i) {
+    std::string val;
+    PutFixed64(&val, i);
+    db_->Merge(WriteOptions(), "key", val);
+    if (i == kNumMergeOps / 2) {
+      // deletes [0, 5]
+      db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(), "key",
+                       "key_");
+    }
+  }
+
+  ReadOptions read_opts;
+  std::string expected, actual;
+  ASSERT_OK(db_->Get(read_opts, "key", &actual));
+  PutFixed64(&expected, 30);  // 6+7+8+9
+  ASSERT_EQ(expected, actual);
+
+  expected.clear();
+  read_opts.ignore_range_deletions = true;
+  ASSERT_OK(db_->Get(read_opts, "key", &actual));
+  PutFixed64(&expected, 45);  // 0+1+2+...+9
+  ASSERT_EQ(expected, actual);
+}
+
+TEST_F(DBRangeDelTest, GetIgnoresRangeDeletions) {
+  Options opts = CurrentOptions();
+  opts.max_write_buffer_number = 4;
+  opts.min_write_buffer_number_to_merge = 3;
+  opts.memtable_factory.reset(new SpecialSkipListFactory(1));
+  Reopen(opts);
+
+  db_->Put(WriteOptions(), "sst_key", "val");
+  // snapshot prevents key from being deleted during flush
+  const Snapshot* snapshot = db_->GetSnapshot();
+  ASSERT_OK(
+      db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(), "a", "z"));
+  ASSERT_OK(db_->Flush(FlushOptions()));
+  db_->Put(WriteOptions(), "imm_key", "val");
+  ASSERT_OK(
+      db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(), "a", "z"));
+  db_->Put(WriteOptions(), "mem_key", "val");
+  ASSERT_OK(
+      db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(), "a", "z"));
+
+  ReadOptions read_opts;
+  read_opts.ignore_range_deletions = true;
+  for (std::string key : {"sst_key", "imm_key", "mem_key"}) {
+    std::string value;
+    ASSERT_OK(db_->Get(read_opts, key, &value));
+  }
+  db_->ReleaseSnapshot(snapshot);
+}
+
+TEST_F(DBRangeDelTest, IteratorRemovesCoveredKeys) {
+  const int kNum = 200, kRangeBegin = 50, kRangeEnd = 150, kNumPerFile = 25;
+  Options opts = CurrentOptions();
+  opts.comparator = test::Uint64Comparator();
+  opts.memtable_factory.reset(new SpecialSkipListFactory(kNumPerFile));
+  Reopen(opts);
+
+  // Write half of the keys before the tombstone and half after the tombstone.
+  // Only covered keys (i.e., within the range and older than the tombstone)
+  // should be deleted.
+  for (int i = 0; i < kNum; ++i) {
+    if (i == kNum / 2) {
+      db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(),
+                       GetNumericStr(kRangeBegin), GetNumericStr(kRangeEnd));
+    }
+    db_->Put(WriteOptions(), GetNumericStr(i), "val");
+  }
+  ReadOptions read_opts;
+  auto* iter = db_->NewIterator(read_opts);
+
+  int expected = 0;
+  for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
+    ASSERT_EQ(GetNumericStr(expected), iter->key());
+    if (expected == kRangeBegin - 1) {
+      expected = kNum / 2;
+    } else {
+      ++expected;
+    }
+  }
+  ASSERT_EQ(kNum, expected);
+  delete iter;
+}
+
+TEST_F(DBRangeDelTest, IteratorOverUserSnapshot) {
+  const int kNum = 200, kRangeBegin = 50, kRangeEnd = 150, kNumPerFile = 25;
+  Options opts = CurrentOptions();
+  opts.comparator = test::Uint64Comparator();
+  opts.memtable_factory.reset(new SpecialSkipListFactory(kNumPerFile));
+  Reopen(opts);
+
+  const Snapshot* snapshot = nullptr;
+  // Put a snapshot before the range tombstone, verify an iterator using that
+  // snapshot sees all inserted keys.
+  for (int i = 0; i < kNum; ++i) {
+    if (i == kNum / 2) {
+      snapshot = db_->GetSnapshot();
+      db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(),
+                       GetNumericStr(kRangeBegin), GetNumericStr(kRangeEnd));
+    }
+    db_->Put(WriteOptions(), GetNumericStr(i), "val");
+  }
+  ReadOptions read_opts;
+  read_opts.snapshot = snapshot;
+  auto* iter = db_->NewIterator(read_opts);
+
+  int expected = 0;
+  for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
+    ASSERT_EQ(GetNumericStr(expected), iter->key());
+    ++expected;
+  }
+  ASSERT_EQ(kNum / 2, expected);
+  delete iter;
+  db_->ReleaseSnapshot(snapshot);
+}
+
+TEST_F(DBRangeDelTest, IteratorIgnoresRangeDeletions) {
+  Options opts = CurrentOptions();
+  opts.max_write_buffer_number = 4;
+  opts.min_write_buffer_number_to_merge = 3;
+  opts.memtable_factory.reset(new SpecialSkipListFactory(1));
+  Reopen(opts);
+
+  db_->Put(WriteOptions(), "sst_key", "val");
+  // snapshot prevents key from being deleted during flush
+  const Snapshot* snapshot = db_->GetSnapshot();
+  ASSERT_OK(
+      db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(), "a", "z"));
+  ASSERT_OK(db_->Flush(FlushOptions()));
+  db_->Put(WriteOptions(), "imm_key", "val");
+  ASSERT_OK(
+      db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(), "a", "z"));
+  db_->Put(WriteOptions(), "mem_key", "val");
+  ASSERT_OK(
+      db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(), "a", "z"));
+
+  ReadOptions read_opts;
+  read_opts.ignore_range_deletions = true;
+  auto* iter = db_->NewIterator(read_opts);
+  int i = 0;
+  std::string expected[] = {"imm_key", "mem_key", "sst_key"};
+  for (iter->SeekToFirst(); iter->Valid(); iter->Next(), ++i) {
+    std::string key;
+    ASSERT_EQ(expected[i], iter->key());
+  }
+  ASSERT_EQ(3, i);
+  delete iter;
+  db_->ReleaseSnapshot(snapshot);
+}
 
 }  // namespace rocksdb
 

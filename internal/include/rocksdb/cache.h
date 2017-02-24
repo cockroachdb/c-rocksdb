@@ -24,6 +24,7 @@
 
 #include <stdint.h>
 #include <memory>
+#include <string>
 #include "rocksdb/slice.h"
 #include "rocksdb/statistics.h"
 #include "rocksdb/status.h"
@@ -101,6 +102,12 @@ class Cache {
   // function.
   virtual Handle* Lookup(const Slice& key, Statistics* stats = nullptr) = 0;
 
+  // Increments the reference count for the handle if it refers to an entry in
+  // the cache. Returns true if refcount was incremented; otherwise, returns
+  // false.
+  // REQUIRES: handle must have been returned by a method on *this.
+  virtual bool Ref(Handle* handle) = 0;
+
   // Release a mapping returned by a previous Lookup().
   // REQUIRES: handle must not have been released yet.
   // REQUIRES: handle must have been returned by a method on *this.
@@ -166,6 +173,8 @@ class Cache {
   // Remove all entries.
   // Prerequisit: no entry is referenced.
   virtual void EraseUnRefEntries() = 0;
+
+  virtual std::string GetPrintableOptions() const { return ""; }
 
  private:
   // No copying allowed
