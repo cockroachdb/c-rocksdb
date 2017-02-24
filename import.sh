@@ -35,7 +35,7 @@ set -eu
 
 rm -rf internal/*
 find . -type l -not -path './.git/*' -exec rm {} \;
-curl -sL https://github.com/facebook/rocksdb/archive/v5.1.2.tar.gz | tar zxf - -C internal --strip-components=1
+curl -sL https://github.com/facebook/rocksdb/archive/v5.1.3.tar.gz | tar zxf - -C internal --strip-components=1
 make -C internal util/build_version.cc
 # TODO(tamird): remove when
 # https://github.com/facebook/rocksdb/pull/1910 is merged and release.
