@@ -3,6 +3,8 @@
 //  LICENSE file in the root directory of this source tree. An additional grant
 //  of patent rights can be found in the PATENTS file in the same directory.
 
+#include <functional>
+
 #include "db/db_test_util.h"
 #include "port/port.h"
 #include "port/stack_trace.h"
@@ -139,6 +141,9 @@ TEST_F(ExternalSSTFileTest, Basic) {
 
     SstFileWriter sst_file_writer(EnvOptions(), options, options.comparator);
 
+    // Current file size should be 0 after sst_file_writer init and before open a file.
+    ASSERT_EQ(sst_file_writer.FileSize(), 0);
+
     // file1.sst (0 => 99)
     std::string file1 = sst_files_dir_ + "file1.sst";
     ASSERT_OK(sst_file_writer.Open(file1));
@@ -148,6 +153,10 @@ TEST_F(ExternalSSTFileTest, Basic) {
     ExternalSstFileInfo file1_info;
     Status s = sst_file_writer.Finish(&file1_info);
     ASSERT_TRUE(s.ok()) << s.ToString();
+
+    // Current file size should be non-zero after success write.
+    ASSERT_GT(sst_file_writer.FileSize(), 0);
+
     ASSERT_EQ(file1_info.file_path, file1);
     ASSERT_EQ(file1_info.num_entries, 100);
     ASSERT_EQ(file1_info.smallest_key, Key(0));
@@ -182,7 +191,10 @@ TEST_F(ExternalSSTFileTest, Basic) {
     }
     ExternalSstFileInfo file3_info;
     s = sst_file_writer.Finish(&file3_info);
+
     ASSERT_TRUE(s.ok()) << s.ToString();
+    // Current file size should be non-zero after success finish.
+    ASSERT_GT(sst_file_writer.FileSize(), 0);
     ASSERT_EQ(file3_info.file_path, file3);
     ASSERT_EQ(file3_info.num_entries, 105);
     ASSERT_EQ(file3_info.smallest_key, Key(195));
@@ -1748,8 +1760,6 @@ TEST_F(ExternalSSTFileTest, CompactionDeadlock) {
   // `DBImpl::AddFile:Start` will wait until we be here
   TEST_SYNC_POINT("ExternalSSTFileTest::DeadLock:1");
 
-  ASSERT_EQ(running_threads.load(), 2);
-
   // Wait for IngestExternalFile() to start and aquire mutex
   TEST_SYNC_POINT("ExternalSSTFileTest::DeadLock:2");
 
@@ -1933,6 +1943,47 @@ TEST_F(ExternalSSTFileTest, SnapshotInconsistencyBug) {
   }
 
   db_->ReleaseSnapshot(snap);
+}
+
+TEST_F(ExternalSSTFileTest, FadviseTrigger) {
+  Options options = CurrentOptions();
+  const int kNumKeys = 10000;
+
+  size_t total_fadvised_bytes = 0;
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
+      "SstFileWriter::InvalidatePageCache", [&](void* arg) {
+        size_t fadvise_size = *(reinterpret_cast<size_t*>(arg));
+        total_fadvised_bytes += fadvise_size;
+      });
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
+
+  std::unique_ptr<SstFileWriter> sst_file_writer;
+
+  std::string sst_file_path = sst_files_dir_ + "file_fadvise_disable.sst";
+  sst_file_writer.reset(new SstFileWriter(EnvOptions(), options,
+                                          options.comparator, nullptr, false));
+  ASSERT_OK(sst_file_writer->Open(sst_file_path));
+  for (int i = 0; i < kNumKeys; i++) {
+    ASSERT_OK(sst_file_writer->Add(Key(i), Key(i)));
+  }
+  ASSERT_OK(sst_file_writer->Finish());
+  // fadvise disabled
+  ASSERT_EQ(total_fadvised_bytes, 0);
+
+
+  sst_file_path = sst_files_dir_ + "file_fadvise_enable.sst";
+  sst_file_writer.reset(new SstFileWriter(EnvOptions(), options,
+                                          options.comparator, nullptr, true));
+  ASSERT_OK(sst_file_writer->Open(sst_file_path));
+  for (int i = 0; i < kNumKeys; i++) {
+    ASSERT_OK(sst_file_writer->Add(Key(i), Key(i)));
+  }
+  ASSERT_OK(sst_file_writer->Finish());
+  // fadvise enabled
+  ASSERT_EQ(total_fadvised_bytes, sst_file_writer->FileSize());
+  ASSERT_GT(total_fadvised_bytes, 0);
+
+  rocksdb::SyncPoint::GetInstance()->DisableProcessing();
 }
 
 #endif  // ROCKSDB_LITE

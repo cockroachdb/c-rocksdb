@@ -1505,6 +1505,10 @@ class MockPersistentCache : public PersistentCache {
 
   bool IsCompressed() override { return is_compressed_; }
 
+  std::string GetPrintableOptions() const override {
+    return "MockPersistentCache";
+  }
+
   port::Mutex lock_;
   std::map<std::string, std::string> data_;
   const bool is_compressed_ = true;
@@ -2211,6 +2215,18 @@ TEST_F(DBTest2, ManualCompactionOverlapManualCompaction) {
   bg_thread.join();
 
   rocksdb::SyncPoint::GetInstance()->DisableProcessing();
+}
+
+TEST_F(DBTest2, OptimizeForPointLookup) {
+  Options options = CurrentOptions();
+  Close();
+  options.OptimizeForPointLookup(2);
+  ASSERT_OK(DB::Open(options, dbname_, &db_));
+
+  ASSERT_OK(Put("foo", "v1"));
+  ASSERT_EQ("v1", Get("foo"));
+  Flush();
+  ASSERT_EQ("v1", Get("foo"));
 }
 #endif  // ROCKSDB_LITE
 

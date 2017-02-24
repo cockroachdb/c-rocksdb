@@ -308,6 +308,16 @@ class DBImpl : public DB {
                            ColumnFamilyHandle* column_family = nullptr,
                            bool disallow_trivial_move = false);
 
+  void TEST_MaybeFlushColumnFamilies();
+
+  bool TEST_UnableToFlushOldestLog() {
+    return unable_to_flush_oldest_log_;
+  }
+
+  bool TEST_IsLogGettingFlushed() {
+    return alive_log_files_.begin()->getting_flushed;
+  }
+
   // Force current memtable contents to be flushed.
   Status TEST_FlushMemTable(bool wait = true,
                             ColumnFamilyHandle* cfh = nullptr);
@@ -379,6 +389,8 @@ class DBImpl : public DB {
   // move logs pending closing from job_context to the DB queue and
   // schedule a purge
   void ScheduleBgLogWriterClose(JobContext* job_context);
+
+  uint64_t MinLogNumberToKeep();
 
   // Returns the list of live files in 'live' and the list
   // of all files in the filesystem in 'candidate_files'.
@@ -732,7 +744,7 @@ class DBImpl : public DB {
   // REQUIRES: mutex locked
   Status PersistOptions();
 
-  void FlushColumnFamilies();
+  void MaybeFlushColumnFamilies();
 
   uint64_t GetMaxTotalWalSize() const;
 
@@ -976,8 +988,9 @@ class DBImpl : public DB {
   // without any synchronization
   int disable_delete_obsolete_files_;
 
-  // next time when we should run DeleteObsoleteFiles with full scan
-  uint64_t delete_obsolete_files_next_run_;
+  // last time when DeleteObsoleteFiles with full scan was executed. Originaly
+  // initialized with startup time.
+  uint64_t delete_obsolete_files_last_run_;
 
   // last time stats were dumped to LOG
   std::atomic<uint64_t> last_stats_dump_time_microsec_;
@@ -990,6 +1003,15 @@ class DBImpl : public DB {
   // data that is not yet persisted into either WAL or SST file.
   // Used when disableWAL is true.
   bool has_unpersisted_data_;
+
+
+  // if an attempt was made to flush all column families that
+  // the oldest log depends on but uncommited data in the oldest
+  // log prevents the log from being released.
+  // We must attempt to free the dependent memtables again
+  // at a later time after the transaction in the oldest
+  // log is fully commited.
+  bool unable_to_flush_oldest_log_;
 
   static const int KEEP_LOG_FILE_NUM = 1000;
   // MSVC version 1800 still does not have constexpr for ::max()

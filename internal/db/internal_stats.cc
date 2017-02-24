@@ -221,6 +221,7 @@ static const std::string num_live_versions = "num-live-versions";
 static const std::string current_version_number =
     "current-super-version-number";
 static const std::string estimate_live_data_size = "estimate-live-data-size";
+static const std::string min_log_number_to_keep = "min-log-number-to-keep";
 static const std::string base_level = "base-level";
 static const std::string total_sst_files_size = "total-sst-files-size";
 static const std::string estimate_pending_comp_bytes =
@@ -285,6 +286,8 @@ const std::string DB::Properties::kCurrentSuperVersionNumber =
     rocksdb_prefix + current_version_number;
 const std::string DB::Properties::kEstimateLiveDataSize =
                       rocksdb_prefix + estimate_live_data_size;
+const std::string DB::Properties::kMinLogNumberToKeep =
+    rocksdb_prefix + min_log_number_to_keep;
 const std::string DB::Properties::kTotalSstFilesSize =
                       rocksdb_prefix + total_sst_files_size;
 const std::string DB::Properties::kBaseLevel = rocksdb_prefix + base_level;
@@ -368,6 +371,8 @@ const std::unordered_map<std::string, DBPropertyInfo>
           nullptr}},
         {DB::Properties::kEstimateLiveDataSize,
          {true, nullptr, &InternalStats::HandleEstimateLiveDataSize, nullptr}},
+        {DB::Properties::kMinLogNumberToKeep,
+         {false, nullptr, &InternalStats::HandleMinLogNumberToKeep, nullptr}},
         {DB::Properties::kBaseLevel,
          {false, nullptr, &InternalStats::HandleBaseLevel, nullptr}},
         {DB::Properties::kTotalSstFilesSize,
@@ -705,6 +710,12 @@ bool InternalStats::HandleEstimateLiveDataSize(uint64_t* value, DBImpl* db,
   return true;
 }
 
+bool InternalStats::HandleMinLogNumberToKeep(uint64_t* value, DBImpl* db,
+                                             Version* version) {
+  *value = db->MinLogNumberToKeep();
+  return true;
+}
+
 void InternalStats::DumpDBStats(std::string* value) {
   char buf[1000];
   // DB-level stats, only available from default column family
@@ -918,7 +929,7 @@ int InternalStats::DumpCFMapStats(
 }
 
 void InternalStats::DumpCFStats(std::string* value) {
-  char buf[1000];
+  char buf[2000];
   // Per-ColumnFamily stats
   PrintLevelStatsHeader(buf, sizeof(buf), cfd_->GetName());
   value->append(buf);
