@@ -10,6 +10,7 @@
 #include "util/threadpool_imp.h"
 #include <algorithm>
 #include <atomic>
+#include <stdlib.h>
 
 #ifndef OS_WIN
 #  include <unistd.h>
@@ -17,10 +18,6 @@
 
 #ifdef OS_LINUX
 #  include <sys/syscall.h>
-#endif
-
-#ifdef OS_FREEBSD
-#  include <stdlib.h>
 #endif
 
 

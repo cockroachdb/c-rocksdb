@@ -1,7 +1,7 @@
-diff --git a/internal/port/win/port_win.cc b/internal/port/win/port_win.cc
+diff --git a/port/win/port_win.cc b/port/win/port_win.cc
 index dd87c35..1cab72c 100644
---- a/internal/port/win/port_win.cc
-+++ b/internal/port/win/port_win.cc
+--- a/port/win/port_win.cc
++++ b/port/win/port_win.cc
 @@ -31,6 +31,7 @@
  namespace rocksdb {
  namespace port {
