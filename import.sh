@@ -36,10 +36,12 @@ set -eu
 rm -rf internal/*
 find . -type l -not -path './.git/*' -exec rm {} \;
 curl -sL https://github.com/facebook/rocksdb/archive/v5.1.4.tar.gz | tar zxf - -C internal --strip-components=1
-make -C internal util/build_version.cc
 # TODO(tamird): remove when
-# https://github.com/facebook/rocksdb/pull/1910 is merged and release.
-patch -p1 < gettimeofday.patch
+# https://github.com/facebook/rocksdb/pull/1910 is merged and released.
+patch -d internal -p1 < gettimeofday.patch
+# TODO(tamird): remove when
+# https://github.com/facebook/rocksdb/pull/1931 is merged and released.
+patch -d internal -p1 < abort.patch
 # Downcase some windows-only includes for compatibility with mingw64.
 grep -lR '^#include <.*[A-Z].*>' internal | while IFS= read -r source_file; do
   awk '/^#include <.*[A-Z].*>/ { print tolower($0); next; } { print; }' "$source_file" > tmp
@@ -47,6 +49,8 @@ grep -lR '^#include <.*[A-Z].*>' internal | while IFS= read -r source_file; do
 done
 # Avoid MSVC-only extensions for compatibility with mingw64.
 grep -lRF 'i64;' internal | xargs sed -i~ 's!i64;!LL;!g'
+
+make -C internal util/build_version.cc
 
 # symlink so cgo compiles them
 for source_file in $(make sources | grep -vE '^internal/(port/win|utilities/redis)/|_posix.cc$'); do
