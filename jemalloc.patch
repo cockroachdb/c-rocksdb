@@ -1,0 +1,13 @@
+diff --git a/db/db_impl.cc b/db/db_impl.cc
+index 578fe7c..b7d4413 100644
+--- a/db/db_impl.cc
++++ b/db/db_impl.cc
+@@ -605,7 +605,7 @@ static void DumpMallocStats(std::string* stats) {
+   std::unique_ptr<char> buf{new char[kMallocStatusLen + 1]};
+   mstat.cur = buf.get();
+   mstat.end = buf.get() + kMallocStatusLen;
+-  malloc_stats_print(GetJemallocStatus, &mstat, "");
++  je_malloc_stats_print(GetJemallocStatus, &mstat, "");
+   stats->append(buf.get());
+ #endif  // ROCKSDB_JEMALLOC
+ }

@@ -42,6 +42,7 @@ patch -d internal -p1 < gettimeofday.patch
 # TODO(tamird): remove when
 # https://github.com/facebook/rocksdb/pull/1931 is merged and released.
 patch -d internal -p1 < abort.patch
+patch -d internal -p1 < jemalloc.patch
 # Downcase some windows-only includes for compatibility with mingw64.
 grep -lR '^#include <.*[A-Z].*>' internal | while IFS= read -r source_file; do
   awk '/^#include <.*[A-Z].*>/ { print tolower($0); next; } { print; }' "$source_file" > tmp
