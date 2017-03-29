@@ -13,5 +13,6 @@ package rocksdb
 // #cgo linux CPPFLAGS: -DOS_LINUX -fno-builtin-memcmp -DROCKSDB_MALLOC_USABLE_SIZE
 // #cgo freebsd CPPFLAGS: -DOS_FREEBSD
 // #cgo dragonfly CPPFLAGS: -DOS_DRAGONFLY
+// #cgo linux LDFLAGS: -lrt
 // #cgo windows LDFLAGS: -lrpcrt4
 import "C"
