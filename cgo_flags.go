@@ -6,7 +6,6 @@ package rocksdb
 // #cgo CPPFLAGS: -Iinternal -Iinternal/include -Iinternal/db -Iinternal/util
 // #cgo CPPFLAGS: -Iinternal/utilities/merge_operators/string_append
 // #cgo CXXFLAGS: -std=c++11
-// #cgo amd64 CPPFLAGS: -msse -msse4.2
 // #cgo windows CPPFLAGS: -DOS_WIN
 // #cgo !windows CPPFLAGS: -DROCKSDB_PLATFORM_POSIX -DROCKSDB_LIB_IO_POSIX
 // #cgo darwin CPPFLAGS: -DOS_MACOSX -DROCKSDB_BACKTRACE
